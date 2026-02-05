@@ -1761,7 +1761,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  //rawADC[iraw] += fCM_online[isamp] (not yet sure if we want to add back the online-CM) ;
 	}
 
-  // if ( fIsMC && fPedSubFlag != 0 ) ped = 0.0; // Tesing digitization with 'online' CM correction and ZS applied.
+  if ( fIsMC && fPedSubFlag != 0 ) ped = 0.0; // Tesing: digitization with 'online' CM correction and ZS applied. ADR.
 	  
 	pedsubADC[iraw] = double(ADC) - ped;
 	commonModeSubtractedADC[iraw] = double(ADC) - ped; 
