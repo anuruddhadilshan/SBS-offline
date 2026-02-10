@@ -479,9 +479,9 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   //<< " fThresholdSample " << fThresholdSample << std::endl;
   
   if( fIsMC ){
-    fCommonModeFlag = -1;
+    //fCommonModeFlag = -1; // commented out by ADR for 'full-readout' digitized data replay.
     fPedestalMode = false;
-    fOnlineZeroSuppression = true;
+    //fOnlineZeroSuppression = true; // commented out by ADR for 'full-readout' digitized data replay.
     fAPVmapping = SBSGEM::kMC;
   }
 
@@ -1617,8 +1617,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
       //if( chan != effChan ) continue; // 
 
     if( fIsMC ) {
-      CM_ENABLED = true;
-      BUILD_ALL_SAMPLES = false;
+      CM_ENABLED = fCommonModeFlag != 0 && fCommonModeFlag != 1 && !fPedestalMode; //true; // Commented out by ADR for 'full r/o' digitized data replay.
+      BUILD_ALL_SAMPLES = !fOnlineZeroSuppression; //false; // Commented out by ADR for 'full r/o' digitized data replay.
     }
 
     //Let's see if we can actually decode the MPD debug headers:
