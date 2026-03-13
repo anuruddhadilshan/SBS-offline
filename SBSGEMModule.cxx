@@ -1618,7 +1618,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
     if( fIsMC ) {
       CM_ENABLED = fCommonModeFlag != 0 && fCommonModeFlag != 1 && !fPedestalMode; //true; // Commented out by ADR for 'full r/o' digitized data replay.
-      BUILD_ALL_SAMPLES = !fOnlineZeroSuppression; //false; // Commented out by ADR for 'full r/o' digitized data replay.
+      BUILD_ALL_SAMPLES = !fOnlineZeroSuppression && !CM_ENABLED; //false; // Commented out by ADR for 'full r/o' digitized data replay.
     }
 
     //Let's see if we can actually decode the MPD debug headers:
@@ -1735,7 +1735,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	rawADC_nopedsub[iraw] = ADC;
 	
-	if( fPedSubFlag != 0 ){ //ped subtraction online; add pedestal back in to the "nopedsub" value:
+	if( fPedSubFlag != 0 && !fIsMC ){ //ped subtraction online; add pedestal back in to the "nopedsub" value.
+  // AND don't do it for MC because we are not adding pedestal offsets in digitization. ADR on 2/17/2026.
 	  rawADC_nopedsub[iraw] = Int_t(ADC +  ped);
 	}
 
@@ -1795,6 +1796,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	    if( ngood < fCommonModeMinStripsInRange ){
 	      goodCM = false; //we'll require good common-mode on all six time samples to keep this APV's data for tracking analysis
+        if ( fIsMC ) goodCM = true; // TEST !!! ADR
 	    }
 	    
 	    //moved common-mode calculation to its own function:
