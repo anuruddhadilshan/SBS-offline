@@ -72,6 +72,7 @@ struct sbsgemhit_t { //2D reconstructed hits
   Double_t Ehit;  //Sum of all ADC values on all strips in the cluster: actually 1/2*( ADCX + ADCY ); i.e., average of cluster sums in X and Y
   /* Double_t Euhit; //Sum of all ADC values on U strips in the cluster; */
   /* Double_t Evhit; //Sum of all ADC values on V strips in the cluster; */
+  Double_t goodADC_Ehit; // MC only. Sum of all good ADC values on all strips in the cluster: 1/2*( ADCgoodX + ADCgoodY ).
   Double_t thit;  //Average of ADC-weighted mean U strip time and V strip time
   /* Double_t tuhit; //Average time of U strips in cluster; */
   /* Double_t tvhit; //Average time of V strips in cluster; */
@@ -101,6 +102,7 @@ struct sbsgemcluster_t {  //1D clusters;
   UInt_t isampmaxDeconv; //time sample in which the deconvoluted cluster-summed ADC samples peaks.
   UInt_t icombomaxDeconv; //2nd time sample of max two-sample combo for cluster-summed deconvoluted ADC samples
   std::vector<Double_t> ADCsamples; //cluster-summed ADC samples (accounting for split fraction)
+  UInt_t nstrips_goodADC; // Number of strips with good-ADC in the cluster. MC only.
   //New variables:
   std::vector<Double_t> DeconvADCsamples; //cluster-summed deconvoluted ADC ssamples (accounting for split fraction)
   Double_t hitpos_mean;  //ADC-weighted mean coordinate along the direction measured by the strip
@@ -115,6 +117,7 @@ struct sbsgemcluster_t {  //1D clusters;
   Double_t t_mean_deconv; //cluster-summed mean deconvoluted hit time.
   Double_t t_mean_fit; //cluster-summed "fit" time.
   //Do we want to store the individual strip ADC Samples with the 1D clustering results? I don't think so; as these can be accessed via the decoded strip info.
+  Double_t clustergoodADCsum; // MC only. Sum of good ADCs over all samples on all strips (that have good ADC).
   
   std::vector<UInt_t> hitindex; //position in decoded hit array of each strip in the cluster:
   UInt_t rawstrip; //Raw APV strip number before decoding 
@@ -401,6 +404,7 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<Int_t> fRawADC_nopedsub_APV;
   std::vector<Double_t> fPedSubADC_APV;
   std::vector<Double_t> fCommonModeSubtractedADC_APV;
+  std::vector<Int_t> fGoodADC_APV; // Only relevant for MC data. Holds the 'adc_good' vals which are the pure ADC samples from the primary particle.
   
   //Let's store the online calculated common-mode in its own dedicated array as well:
   std::vector<Double_t> fCM_online; //size equal to fN_MPD_TIME_SAMP
@@ -439,8 +443,10 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<std::vector<Double_t> > fADCsamples; //2D array of ADC samples by hit: Outer index runs over hits; inner index runs over ADC samples
   std::vector<std::vector<Int_t> > fRawADCsamples; //2D array of raw (non-baseline-subtracted) ADC values.
   std::vector<std::vector<Double_t> > fADCsamples_deconv; //"Deconvoluted" ADC samples
+  std::vector<std::vector<Int_t> > fGoodADCsamples; // 2D array of good-ADC samples from the primary particle. Only relevant for MC data.
   
   std::vector<Double_t> fADCsums;
+  std::vector<Double_t> fgoodADCsums; // MC only.
   std::vector<Double_t> fADCsumsDeconv; //deconvoluted strip ADC sums
   std::vector<Double_t> fStripADCavg;
   std::vector<UInt_t> fStripIsU; // is this a U strip? 0/1
