@@ -1736,9 +1736,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  ADC_good = (strip & 0x7FF80) >> 7;
 	  //if(strcmp(GetParent()->GetName(), "gemFT")==0){for(int ibit = 32; ibit>=0; ibit--){cout << ((ADC_good & 1<<ibit)>>ibit) << "";}cout << endl;}
 	  //the actual strip number should be the last 7 bits of strip if we have this "good adc" encoded
-	  strip = strip & 0x7F;
-    std::cout << "ADC_good : strip = " << ADC_good << " : " << strip << std::endl; 
-    if ( iraw == nsamp-1 ) std::cout << "END APV" << std::endl;
+	  strip = strip & 0x7F;    
 	}
 	
 	int isamp = iraw%fN_MPD_TIME_SAMP;
@@ -1751,6 +1749,10 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  //cout << ADC << " " << (1<<12) << endl;
 	  ADC = ADC - (1<<13);
 	}
+
+  // std::cout << "ADC : ADC_good : strip = " << ADC << " : " << ADC_good << " : " << strip << std::endl;
+  // if ( iraw == nsamp-1 ) std::cout << "END APV" << std::endl;
+
 	rawStrip[iraw] = strip;
 	Strip[iraw] = GetStripNumber( strip, it->pos, it->invert );
 
@@ -2619,7 +2621,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	  //  fADCsums.push_back( ADCsum_temp ); //sum of all (pedestal-subtracted) samples
 	  fADCsums[fNstrips_hit] = ADCsum_temp;
-	  
+	  fgoodADCsums[fNstrips_hit] = goodADCsum_temp;
+
 	  //  fStripADCavg.push_back( ADCsum_temp/double(fN_MPD_TIME_SAMP) );
 	  fStripADCavg[fNstrips_hit] = ADCsum_temp/double(fN_MPD_TIME_SAMP);
 	  
@@ -2653,7 +2656,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    
 	  }
 	  
-	  
+	  //if ( fgoodADCsums[fNstrips_hit] != 0 ) std::cout << "strip : ADC : goodADC = " << fStrip[fNstrips_hit] << " : " << fADCsamples[fNstrips_hit][isamp] << " : " << fGoodADCsamples[fNstrips_hit][isamp] << std::endl;
 	  fNstrips_hit++;
 	  fNstrips_hit_pos++;
 	
@@ -2794,8 +2797,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  
 	  //  fADCsums.push_back( ADCsum_temp ); //sum of all (pedestal-subtracted) samples
 	  fADCsums[fNstrips_hit] = ADCsum_temp;
-    fgoodADCsums[fNstrips_hit] = goodADCsum_temp;
-	  
+    	  
 	  //  fStripADCavg.push_back( ADCsum_temp/double(fN_MPD_TIME_SAMP) );
 	  fStripADCavg[fNstrips_hit] = ADCsum_temp/double(fN_MPD_TIME_SAMP);
 	  
@@ -2827,8 +2829,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	      fNstrips_keep_lmaxV += isV;
 	    }
 	    
-	  }
-	  
+	  }	  
 	  
 	  fNstrips_hit++;
 	  fNstrips_hit_neg++;
