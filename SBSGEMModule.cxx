@@ -729,6 +729,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fADCsamples1D.resize( nstripsmax * fN_MPD_TIME_SAMP );
   fRawADCsamples1D.resize( nstripsmax * fN_MPD_TIME_SAMP );
   fADCsamplesDeconv1D.resize( nstripsmax * fN_MPD_TIME_SAMP );
+  fGoodADCsamples1D.resize( nstripsmax * fN_MPD_TIME_SAMP );
  
   
   //default all common-mode mean and RMS values to 0 and 10 respectively if they were
@@ -1201,6 +1202,7 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "strip.ADCsamples", "ADC samples (index = isamp+Nsamples*istrip)", kDouble, 0, &(fADCsamples1D[0]), &fNdecoded_ADCsamples },
     { "strip.rawADCsamples", "raw ADC samples (no baseline subtraction)", kInt, 0, &(fRawADCsamples1D[0]), &fNdecoded_ADCsamples },
     { "strip.DeconvADCsamples", "Deconvoluted ADC samples (index = isamp+Nsamples*istrip)", kDouble, 0, &(fADCsamplesDeconv1D[0]), &fNdecoded_ADCsamples },
+    { "strip.goodADCsamples", "MC Good ADC samples (index = isamp+Nsamples*istrip)", kInt, 0, &(fGoodADCsamples1D[0]), &fNdecoded_ADCsamples},
     { "strip.ADCsum", "Sum of ADC samples on a strip", kDouble, 0, &(fADCsums[0]), &fNstrips_hit },
     { "strip.DeconvADCsum", "Sum of deconvoluted ADC samples on a strip", kDouble, 0, &(fADCsumsDeconv[0]), &fNstrips_hit },
     { "strip.isampmax", "sample in which max ADC occurred on a strip", kUInt, 0, &(fMaxSamp[0]), &fNstrips_hit },
@@ -1324,6 +1326,15 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
   RVarDef varmisc[] = {
     {"ontrack", "Track passed through this module", "fTrackPassedThrough" },
     {"layer", "Layer number of this module", "fLayer" },
+    {"roi.inmod", "Does the region-of-interest defined by the constraint-points/widths overlap with the module?", "fIsROIinMod"},
+    {"roi.xmin", "xmin of the region-of-interest", "fROI_xmin"},
+    {"roi.xmax", "xmax of the region-of-interest", "fROI_xmax"},
+    {"roi.ymin", "ymin of the region-of-interest", "fROI_ymin"},
+    {"roi.ymax", "ymax of the region-of-interest", "fROI_ymax"},
+    {"roi.ustrip_min", "Minimum U strip within the region-of-interest", "fStripUc_min"},
+    {"roi.ustrip_max", "Maximum U strip within the region-of-interest", "fStripUc_max"},
+    {"roi.vstrip_min", "Minimum V strip within the region-of-interest", "fStripVc_min"},
+    {"roi.vstrip_max", "Maximum V strip within the region-of-interest", "fStripVc_max"},
     { nullptr },
   };
 
@@ -1390,7 +1401,7 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
   fxcmax.clear();
   fycmin.clear();
   fycmax.clear();
-  
+
   //fStripAxis.clear();
   // fADCsamples1D.clear();
   // fStripTrackIndex.clear();
@@ -2527,6 +2538,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    fADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = ADCtemp[isamp];
 	    fRawADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = rawADCtemp[isamp];
 	    fADCsamplesDeconv1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = fADCsamples_deconv[fNstrips_hit][isamp];
+      fGoodADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit] = goodADCtemp[isamp];
 	    
 	    if( fKeepStrip[fNstrips_hit] && hADCfrac_vs_timesample_allstrips != NULL ){
 	      hADCfrac_vs_timesample_allstrips->Fill( isamp, ADCtemp[isamp]/ADCsum_temp );
@@ -2915,43 +2927,105 @@ void SBSGEMModule::find_2Dhits(){
   //Start with 1D clustering; if the constraint array for this module has EXACTLY one point and the store all clusters flag is
   // NOT set, do the clustering with constraints! Otherwise do it without constraints!
 
-  if( fxcmin.size() >= 1 && !fStoreAll1Dclusters ){ 
+  // if( fxcmin.size() >= 1 && !fStoreAll1Dclusters ){ 
 
-    double xcenter = 0.5*(fxcmin[0]+fxcmax[0]);
-    double xwidth = 0.5*(fxcmax[0]-fxcmin[0]);
-    double ycenter = 0.5*(fycmin[0]+fycmax[0]);
-    double ywidth = 0.5*(fycmax[0]-fycmin[0]);
+  //   double xcenter = 0.5*(fxcmin[0]+fxcmax[0]);
+  //   double xwidth = 0.5*(fxcmax[0]-fxcmin[0]);
+  //   double ycenter = 0.5*(fycmin[0]+fycmax[0]);
+  //   double ywidth = 0.5*(fycmax[0]-fycmin[0]);
 
-    double ucenter = xcenter * fPxU + ycenter * fPyU;
-    double vcenter = xcenter * fPxV + ycenter * fPyV;
+  //   double ucenter = xcenter * fPxU + ycenter * fPyU;
+  //   double vcenter = xcenter * fPxV + ycenter * fPyV;
 
-    double umin,umax,vmin,vmax;
+  //   double umin,umax,vmin,vmax;
 
-    double xmin = fxcmin[0];
-    double xmax = fxcmax[0];
-    double ymin = fycmin[0];
-    double ymax = fycmax[0];
+  //   double xmin = fxcmin[0];
+  //   double xmax = fxcmax[0];
+  //   double ymin = fycmin[0];
+  //   double ymax = fycmax[0];
     
-    //check the four corners of the rectangle and compute the maximum values of u and v occuring at the four corners of the rectangular region:
-    // NOTE: we will ALSO enforce the 2D search region in X and Y when we combine 1D U/V clusters into 2D X/Y hits, which, depending on the U/V strip orientation
-    // can exclude some 2D hits that would have passed the U/V constraints defined by the corners of the X/Y rectangle, but been outside the X/Y constraint rectangle
+  //   //check the four corners of the rectangle and compute the maximum values of u and v occuring at the four corners of the rectangular region:
+  //   // NOTE: we will ALSO enforce the 2D search region in X and Y when we combine 1D U/V clusters into 2D X/Y hits, which, depending on the U/V strip orientation
+  //   // can exclude some 2D hits that would have passed the U/V constraints defined by the corners of the X/Y rectangle, but been outside the X/Y constraint rectangle
 
-    double u00 = xmin * fPxU + ymin * fPyU;
-    double u01 = xmin * fPxU + ymax * fPyU;
-    double u10 = xmax * fPxU + ymin * fPyU;
-    double u11 = xmax * fPxU + ymax * fPyU;
+  //   double u00 = xmin * fPxU + ymin * fPyU;
+  //   double u01 = xmin * fPxU + ymax * fPyU;
+  //   double u10 = xmax * fPxU + ymin * fPyU;
+  //   double u11 = xmax * fPxU + ymax * fPyU;
 
-    //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:
-    umin = std::min( u00, std::min(u01, std::min(u10, u11) ) );
-    umax = std::max( u00, std::max(u01, std::max(u10, u11) ) );
+  //   //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:
+  //   umin = std::min( u00, std::min(u01, std::min(u10, u11) ) );
+  //   umax = std::max( u00, std::max(u01, std::max(u10, u11) ) );
 
-    double v00 = xmin * fPxV + ymin * fPyV;
-    double v01 = xmin * fPxV + ymax * fPyV;
-    double v10 = xmax * fPxV + ymin * fPyV;
-    double v11 = xmax * fPxV + ymax * fPyV;
+  //   double v00 = xmin * fPxV + ymin * fPyV;
+  //   double v01 = xmin * fPxV + ymax * fPyV;
+  //   double v10 = xmax * fPxV + ymin * fPyV;
+  //   double v11 = xmax * fPxV + ymax * fPyV;
   
-    vmin = std::min( v00, std::min(v01, std::min(v10, v11) ) );
-    vmax = std::max( v00, std::max(v01, std::max(v10, v11) ) );
+  //   vmin = std::min( v00, std::min(v01, std::min(v10, v11) ) );
+  //   vmax = std::max( v00, std::max(v01, std::max(v10, v11) ) );
+
+  //   find_clusters_1D(SBSGEM::kUaxis, ucenter, 0.5*(umax-umin) ); //u strips
+  //   find_clusters_1D(SBSGEM::kVaxis, vcenter, 0.5*(vmax-vmin) ); //v strips
+  if( fxcmin.size() >= 1 ){
+
+    double xmin = 10000000, xmax = -10000000, ymin = 10000000, ymax = -10000000; // Define bounds that are sure to be overriden.
+    double umin = 10000000, umax = -10000000, vmin = 10000000, vmax = -10000000; 
+
+    // Let us loop through all the contraint points and find the above.
+    for ( int icp = 0; icp < fxcmin.size(); icp++  ){
+
+      double xmin_icp = fxcmin[icp];
+      double xmax_icp = fxcmax[icp];
+      double ymin_icp = fycmin[icp];
+      double ymax_icp = fycmax[icp];
+
+      xmin = std::min( xmin, xmin_icp );
+      xmax = std::max( xmax, xmax_icp );
+      ymin = std::min( ymin, ymin_icp );
+      ymax = std::max( ymax, ymax_icp );
+
+      double u00 = xmin_icp * fPxU + ymin_icp * fPyU;
+      double u01 = xmin_icp * fPxU + ymax_icp * fPyU;
+      double u10 = xmax_icp * fPxU + ymin_icp * fPyU;
+      double u11 = xmax_icp * fPxU + ymax_icp * fPyU;
+
+      //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:      
+      umin = std::min( umin, std::min( u00, std::min(u01, std::min(u10, u11) ) ) );
+      umax = std::max( umax, std::max( u00, std::max(u01, std::max(u10, u11) ) ) );
+
+      double v00 = xmin_icp * fPxV + ymin_icp * fPyV;
+      double v01 = xmin_icp * fPxV + ymax_icp * fPyV;
+      double v10 = xmax_icp * fPxV + ymin_icp * fPyV;
+      double v11 = xmax_icp * fPxV + ymax_icp * fPyV;
+
+      vmin = std::min( vmin, std::min( v00, std::min(v01, std::min(v10, v11) ) ) );
+      vmax = std::max( vmax, std::max( v00, std::max(v01, std::max(v10, v11) ) ) );
+    }
+
+    fROI_xmin = xmin;
+    fROI_xmax = xmax;
+    fROI_ymin = ymin;
+    fROI_ymax = ymax;
+
+    //std::cout << "ROI strip, xmin : xmax : ymin : ymax =                             " << xmin << " : "  << xmax << " : " << ymin << " : " << ymax << std::endl;
+
+    // What strip numbers does these min and max values correspond to? 
+    // Main use case is for ML model training.
+    fStripUc_min = GetStripNumberFromPos(umin, SBSGEM::kUaxis);
+    fStripUc_max = GetStripNumberFromPos(umax, SBSGEM::kUaxis);
+    fStripVc_min = GetStripNumberFromPos(vmin, SBSGEM::kVaxis);
+    fStripVc_max = GetStripNumberFromPos(vmax, SBSGEM::kVaxis);
+
+    if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; //
+    else fIsROIinMod = true;
+
+    //std::cout << "ROI strip, umin : umax : vmin : vmax : IN/OUT? =                   " << umin << " : "  << umax << " : " << vmin << " : " << vmax << " : " << fIsROIinMod << std::endl;
+
+    //std::cout << "ROI strip, istrip_umin : istrip_umax : istrip_vmin : istrip_vmax = " << fStripUc_min << " : " << fStripUc_max << " : " << fStripVc_min << " : " << fStripVc_max << std::endl << std::endl;   
+
+    double ucenter = 0.5*(umin + umax);
+    double vcenter = 0.5*(vmin + vmax);
     
     find_clusters_1D(SBSGEM::kUaxis, ucenter, 0.5*(umax-umin) ); //u strips
     find_clusters_1D(SBSGEM::kVaxis, vcenter, 0.5*(vmax-vmin) ); //v strips
@@ -5471,6 +5545,16 @@ Int_t SBSGEMModule::GetStripNumber( UInt_t rawstrip, UInt_t pos, UInt_t invert )
   return RstripPos;
 }
 
+Int_t SBSGEMModule::GetStripNumberFromPos(Double_t hitpos, SBSGEM::GEMaxis_t axis) {
+
+  int nstrips = (axis == SBSGEM::kUaxis) ? fNstripsU : fNstripsV;
+  double pitch = (axis == SBSGEM::kUaxis) ? fUStripPitch : fVStripPitch;
+  double offset = (axis == SBSGEM::kUaxis) ? fUStripOffset : fVStripOffset;
+
+  return static_cast<int>( (hitpos - offset) / pitch - 0.5 + 0.5 * nstrips );
+
+}
+
 void SBSGEMModule::filter_1Dhits(SBSGEM::GEMaxis_t axis){
   
   if( fFiltering_flag1D < 0 ) return; //flag < 0 means don't filter 1D clusters at all
@@ -6833,3 +6917,4 @@ int SBSGEMModule::GetNumGoodHitsAPV( UInt_t isamp, const mpdmap_t &apvinfo, UInt
 
   return ngood;
 }
+

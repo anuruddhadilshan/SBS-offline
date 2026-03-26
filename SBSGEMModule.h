@@ -201,6 +201,9 @@ class SBSGEMModule : public THaSubDetector {
   //function to convert from APV channel number to strip number ordered by position:
   Int_t GetStripNumber( UInt_t rawstrip, UInt_t pos, UInt_t invert );
 
+  //functio to output strip number ordered by position when the position is given the r/o plane coordinates (U/V):
+  Int_t GetStripNumberFromPos( Double_t hitpos, SBSGEM::GEMaxis_t axis );
+
   void PrintPedestals( std::ofstream &dbfile_CM, std::ofstream &daqfile_ped, std::ofstream &daqfile_CM );
   void PrintRawADCrange( std::ofstream &dbfile_ADCrange );
 
@@ -397,6 +400,13 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<Double_t> fxcmin, fxcmax;
   std::vector<Double_t> fycmin, fycmax;
 
+  // Variables to output min and max physical strip numbers of the constraint region. Main use case is to be utilized to define the constraint region for ML training of the hit-finding model.
+  Int_t fStripUc_min, fStripUc_max;
+  Int_t fStripVc_min, fStripVc_max;
+  Bool_t fIsROIinMod; // Is the ROI defined by constraint regions within the module?
+  // Variables to output min and max values of the constraint region 
+  Double_t fROI_xmin, fROI_xmax, fROI_ymin, fROI_ymax;
+
   //Arrays to temporarily hold raw data from ONE APV card:
   std::vector<UInt_t> fStripAPV;
   std::vector<UInt_t> fRawStripAPV;
@@ -517,6 +527,7 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<Double_t> fADCsamples1D; //1D array to hold ADC samples; should end up with dimension fNstrips_hit*fN_MPD_TIME_SAMP
   std::vector<Int_t> fRawADCsamples1D;
   std::vector<Double_t> fADCsamplesDeconv1D; //1D array of deconvoluted ADC samples
+  std::vector<Int_t> fGoodADCsamples1D; // 1D array to hold the good-ADC samples. Only relevant for MC data. 
   
   /////////////////////// End of global variables needed for ROOT Tree/Histogram output ///////////////////////
   //////////////////////////////////////////////////////////////////////////////////////////////
