@@ -3017,11 +3017,17 @@ void SBSGEMModule::find_2Dhits(){
     fStripVc_min = GetStripNumberFromPos(vmin, SBSGEM::kVaxis);
     fStripVc_max = GetStripNumberFromPos(vmax, SBSGEM::kVaxis);
 
-    if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; //
-    else fIsROIinMod = true;
+    if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; // NO overlap of ROI with the module.
+    else{     
+     fIsROIinMod = true;
+     // Clamp the min and max strips to 0 and fNstrips<U/V>, respectively, if they are out-of-bounds.
+     if ( fStripUc_min < 0 )          fStripUc_min = 0;
+     if ( fStripUc_max >= fNstripsU ) fStripUc_max = fNstripsU - 1;
+     if ( fStripVc_min < 0 )          fStripVc_min = 0;
+     if ( fStripVc_max >= fNstripsV ) fStripVc_max = fNstripsV - 1;
+   }    
 
     //std::cout << "ROI strip, umin : umax : vmin : vmax : IN/OUT? =                   " << umin << " : "  << umax << " : " << vmin << " : " << vmax << " : " << fIsROIinMod << std::endl;
-
     //std::cout << "ROI strip, istrip_umin : istrip_umax : istrip_vmin : istrip_vmax = " << fStripUc_min << " : " << fStripUc_max << " : " << fStripVc_min << " : " << fStripVc_max << std::endl << std::endl;   
 
     double ucenter = 0.5*(umin + umax);
