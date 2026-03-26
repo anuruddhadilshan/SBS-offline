@@ -3048,6 +3048,16 @@ void SBSGEMModule::find_2Dhits(){
   //Now make 2D clusters:
 
   if( fNclustU > 0 && fNclustV > 0 ){
+
+    fUGoodClustersIndex.clear();
+    fVGoodClustersIndex.clear();
+
+    for ( int iclus = 0; iclus < fNclustU; iclus++ ){      
+      if ( fUclusters[iclus].keep == true ) fUGoodClustersIndex.push_back( iclus );
+    }
+    for ( int iclus = 0; iclus < fNclustV; iclus++ ){
+     if ( fVclusters[iclus].keep == true ) fVGoodClustersIndex.push_back( iclus );
+    }
   
     // fxcmin = -1.e12;
     // fxcmax = 1.e12;
@@ -3596,6 +3606,7 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
   
   //hopefully this compiles and works correctly:
   std::vector<sbsgemcluster_t> &clusters = (axis == SBSGEM::kUaxis ) ? fUclusters : fVclusters;
+  
 
   UInt_t &nclust = ( axis == SBSGEM::kUaxis ) ? fNclustU : fNclustV; 
   UInt_t &nclust_pos = ( axis == SBSGEM::kUaxis ) ? fNclustU_pos : fNclustV_pos; 
@@ -3609,6 +3620,7 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
  
   
   clusters.clear();
+  
   
   std::set<UShort_t> striplist;  //sorted list of strips for 1D clustering
   std::map<UShort_t, UInt_t> hitindex; //key = strip ID, mapped value = index in decoded hit array, needed to access the other information efficiently:
@@ -4099,8 +4111,8 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
 
     //clusttemp.t_mean_fit -= fStripMaxTcut_central_fit[axis];
     
-    //initialize "keep" flag for all 1D clusters to true:
-    clusttemp.keep = true;
+    //initialize "keep" flag for all 1D clusters to false (ADR on March 26, 2026):
+    clusttemp.keep = false;
       
     clusttemp.isneg = false; //This is used for negative strip analysis
     clusttemp.isnegontrack = false; //This is used for negative strip analysis
@@ -4117,9 +4129,15 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
     if( sumADC >= fThresholdClusterSum && clusttemp.nstrips >= 2 ){ //Increment "total cluster multiplicity"
       nclust_tot++;
     }
+
+    bool isClusterWithinConstraint = fabs( clusttemp.hitpos_mean - constraint_center ) <= constraint_width;
+
+    if ( isClusterWithinConstraint ) clusttemp.keep = true;
+     
     
     //Hopefully this works correctly:
-    if( fabs( clusttemp.hitpos_mean - constraint_center ) <= constraint_width || fStoreAll1Dclusters ){
+    // if( fabs( clusttemp.hitpos_mean - constraint_center ) <= constraint_width || fStoreAll1Dclusters ){
+    if( isClusterWithinConstraint || fStoreAll1Dclusters ){
 
       //Fit max strip time for hits in constraint region:
       // double Tfit = FitStripTime( hitindex[stripmax], 20.0 );
@@ -4487,7 +4505,8 @@ void SBSGEMModule::fill_2D_hit_arrays(){
   fHits.clear();
   fN2Dhits = 0;
 
-  fHits.resize( std::min( fNclustU*fNclustV, fMAX2DHITS ) );
+  //fHits.resize( std::min( fNclustU*fNclustV, fMAX2DHITS ) );
+  fHits.resize( std::min( fUGoodClustersIndex.size()*fVGoodClustersIndex.size(), static_cast<size_t>(fMAX2DHITS) ) );
   
   //if( fNclustU * fNclustV > fMAX2DHITS ){
   //   std::cout << "Warning in SBSGEMModule::fill_2D_hit_arrays(): 
@@ -4517,10 +4536,13 @@ void SBSGEMModule::fill_2D_hit_arrays(){
   bool maxhits_exceeded = false;
 
   //std::cout << "Starting 2D hit finding..." << std::endl;
-  for( UInt_t iu=0; iu<fNclustU; iu++ ){
-    for( UInt_t iv=0; iv<fNclustV; iv++ ){
+  // for( UInt_t iu=0; iu<fNclustU; iu++ ){
+  //   for( UInt_t iv=0; iv<fNclustV; iv++ ){
+  for ( UInt_t iu : fUGoodClustersIndex ){
+    for ( UInt_t iv : fVGoodClustersIndex ){
       //Check that this is a "good" cluster and that it was not already used in track formation:
-      if( fUclusters[iu].keep && fVclusters[iv].keep && !fUclusters[iu].ontrack && !fVclusters[iv].ontrack ){ 
+      // if( fUclusters[iu].keep && fVclusters[iv].keep && !fUclusters[iu].ontrack && !fVclusters[iv].ontrack ){
+      if( !fUclusters[iu].ontrack && !fVclusters[iv].ontrack ){
 	//Initialize sums for computing cluster and strip correlation coefficients:
 	sbsgemhit_t hittemp; // declare a temporary "hit" object:
 
