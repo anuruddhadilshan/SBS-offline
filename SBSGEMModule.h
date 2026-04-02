@@ -176,6 +176,9 @@ class SBSGEMModule : public THaSubDetector {
   //new version to do clustering and spatial splitting in each time sample, and then combine the different time samples
   void find_clusters_1D_experimental(SBSGEM::GEMaxis_t axis, Double_t constraint_center=0.0, Double_t constraint_width=1000.0);
 
+  // 1D clustering routine from MC good-ADC (MC trurh in other words).
+  void find_goodADC_clusters_1D(SBSGEM::GEMaxis_t axis);
+
   void add_constraint( TVector2 constraint_center, TVector2 constraint_width );
   
   void find_2Dhits(); // Version with no arguments assumes no constraint points
@@ -183,6 +186,9 @@ class SBSGEMModule : public THaSubDetector {
 
   // fill the 2D hit arrays from the 1D cluster arrays:
   void fill_2D_hit_arrays(); 
+
+  // fill the 2D hit arrays from the 1D good-ADC cluster arrays:
+  void fill_goodADC_2D_hit_arrays();
 
   //Filter 1D hits by criteria possibly to include ADC threshold, cluster size
   void filter_1Dhits(SBSGEM::GEMaxis_t axis);
@@ -518,10 +524,18 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<sbsgemcluster_t> fVclusters; //1D clusters along "V" direction
   std::vector<Int_t> fVGoodClustersIndex;  //Vector holding index of good clusters from the fVclusters to be considered for 2D hit reconstruction.
 
+  // Variables for hit-formation from good-ADC. Useful for MC only.
+  UInt_t fNclustU_goodADC; // number of good-ADC U clusters found.
+  UInt_t fNclustV_goodADC; // number of good-ADC V clusters found.
+  std::vector<sbsgemcluster_t> fUclusters_goodADC; // 1D good-ADC clusters along "U" direction.
+  std::vector<sbsgemcluster_t> fVclusters_goodADC; // 1D good-ADC clusters along "V" direction.
+
   UInt_t fMAX2DHITS; // Max. 2d hits per module, to limit memory usage:
   UInt_t fN2Dhits; // number of 2D hits found in region of interest:
   UInt_t fN2Dhits_total; 
+  UInt_t fN2Dhits_goodADC;
   std::vector<sbsgemhit_t> fHits; //2D hit reconstruction results
+  std::vector<sbsgemhit_t> fHits_goodADC; //2D hits reconstructed from good-ADC.  
 
   /////////////////////// Global variables that are more convenient for ROOT Tree/Histogram Output (to the extent needed): ///////////////////////
   //Raw strip info:
