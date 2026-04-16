@@ -458,11 +458,9 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<SBSGEM::GEMaxis_t>  fAxis;  //We just made our enumerated type that has two possible values, makes the code more readable (maybe)
   std::vector<std::vector<Double_t> > fADCsamples; //2D array of ADC samples by hit: Outer index runs over hits; inner index runs over ADC samples
   std::vector<std::vector<Int_t> > fRawADCsamples; //2D array of raw (non-baseline-subtracted) ADC values.
-  std::vector<std::vector<Double_t> > fADCsamples_deconv; //"Deconvoluted" ADC samples
-  std::vector<std::vector<Int_t> > fGoodADCsamples; // 2D array of good-ADC samples from the primary particle. Only relevant for MC data.
+  std::vector<std::vector<Double_t> > fADCsamples_deconv; //"Deconvoluted" ADC samples  
   
   std::vector<Double_t> fADCsums;
-  std::vector<Double_t> fgoodADCsums; // MC only.
   std::vector<Double_t> fADCsumsDeconv; //deconvoluted strip ADC sums
   std::vector<Double_t> fStripADCavg;
   std::vector<UInt_t> fStripIsU; // is this a U strip? 0/1
@@ -505,6 +503,21 @@ class SBSGEMModule : public THaSubDetector {
   //because the cut definition machinery sucks, let's define some more booleans:
   std::vector<UInt_t> fStripUonTrack;
   std::vector<UInt_t> fStripVonTrack;
+
+  // Strip variables for good-ADC.
+  Int_t fNdecoded_goodADCsamples; //= fNstrips_hit * fN_MPD_TIME_SAMP
+  Int_t fNstrips_hit_goodADC; //total Number of good-ADC strips fired. For MC only.
+  std::vector<UInt_t> fStrip_goodADC;
+  std::vector<SBSGEM::GEMaxis_t> fAxis_goodADC;
+  std::vector<UInt_t> fStripRaw_goodADC;
+  std::vector<bool> fKeepStrip_goodADC;
+  std::vector<std::vector<Int_t> > fGoodADCsamples; // 2D array of good-ADC samples from the primary particle. Only relevant for MC data.
+  std::vector<Double_t> fGoodADCsums; // MC only.
+  std::vector<Double_t> fStripGoodADCavg;
+  std::vector<UInt_t> fStripIsU_goodADC;
+  std::vector<UInt_t> fStripIsV_goodADC;
+  std::vector<UInt_t> fStripUonTrack_goodADC;
+  std::vector<UInt_t> fStripVonTrack_goodADC;
   
   ////// (1D and 2D) Clustering results (see above for definition of struct sbsgemcluster_t and struct sbsgemhit_t):
 

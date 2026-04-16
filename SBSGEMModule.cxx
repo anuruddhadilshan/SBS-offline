@@ -671,10 +671,12 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fStrip.resize( nstripsmax );
   fAxis.resize( nstripsmax );
   fADCsamples.resize( nstripsmax );
+  fGoodADCsamples.resize( nstripsmax );
+  fStrip_goodADC.resize( nstripsmax );
+  fAxis_goodADC.resize( nstripsmax );
   fRawADCsamples.resize( nstripsmax );
   fADCsamples_deconv.resize( nstripsmax );
-  fGoodADCsamples.resize( nstripsmax );
-  //The lines below are problematic and unnecessary
+  
   for( unsigned int istrip=0; istrip<nstripsmax; istrip++ ){
     fADCsamples[istrip].resize( fN_MPD_TIME_SAMP );
     fRawADCsamples[istrip].resize( fN_MPD_TIME_SAMP );
@@ -685,8 +687,11 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fADCsums.resize( nstripsmax );
   fADCsumsDeconv.resize( nstripsmax );
   fStripADCavg.resize( nstripsmax );
+  fStripGoodADCavg.resize( nstripsmax );
   fStripIsU.resize( nstripsmax );
   fStripIsV.resize( nstripsmax );
+  fStripIsU_goodADC.resize( nstripsmax );
+  fStripIsV_goodADC.resize( nstripsmax );
   fStripOnTrack.resize( nstripsmax );
   fStripIsNeg.resize( nstripsmax );
   fStripIsNegU.resize( nstripsmax );
@@ -695,12 +700,14 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fStripIsNegOnTrackU.resize( nstripsmax );
   fStripIsNegOnTrackV.resize( nstripsmax );
   fStripRaw.resize( nstripsmax );
+  fStripRaw_goodADC.resize( nstripsmax );
   fStripEvent.resize( nstripsmax );
   fStripCrate.resize( nstripsmax );
   fStripMPD.resize( nstripsmax );
   fStripADC_ID.resize( nstripsmax );
   fStripTrackIndex.resize( nstripsmax );
   fKeepStrip.resize( nstripsmax );
+  fKeepStrip_goodADC.resize( nstripsmax );
   fMaxSamp.resize( nstripsmax );
   fMaxSampDeconv.resize( nstripsmax );
   fMaxSampDeconvCombo.resize( nstripsmax );
@@ -724,7 +731,9 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fStripUonTrack.resize( nstripsmax );
   fStripVonTrack.resize( nstripsmax );
 
-  fgoodADCsums.resize( nstripsmax );
+  fGoodADCsums.resize( nstripsmax );
+  fStripIsU_goodADC.resize( nstripsmax );
+  fStripIsV_goodADC.resize( nstripsmax );
 
   fADCsamples1D.resize( nstripsmax * fN_MPD_TIME_SAMP );
   fRawADCsamples1D.resize( nstripsmax * fN_MPD_TIME_SAMP );
@@ -1202,7 +1211,6 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "strip.ADCsamples", "ADC samples (index = isamp+Nsamples*istrip)", kDouble, 0, &(fADCsamples1D[0]), &fNdecoded_ADCsamples },
     { "strip.rawADCsamples", "raw ADC samples (no baseline subtraction)", kInt, 0, &(fRawADCsamples1D[0]), &fNdecoded_ADCsamples },
     { "strip.DeconvADCsamples", "Deconvoluted ADC samples (index = isamp+Nsamples*istrip)", kDouble, 0, &(fADCsamplesDeconv1D[0]), &fNdecoded_ADCsamples },
-    { "strip.goodADCsamples", "MC Good ADC samples (index = isamp+Nsamples*istrip)", kInt, 0, &(fGoodADCsamples1D[0]), &fNdecoded_ADCsamples},
     { "strip.ADCsum", "Sum of ADC samples on a strip", kDouble, 0, &(fADCsums[0]), &fNstrips_hit },
     { "strip.DeconvADCsum", "Sum of deconvoluted ADC samples on a strip", kDouble, 0, &(fADCsumsDeconv[0]), &fNstrips_hit },
     { "strip.isampmax", "sample in which max ADC occurred on a strip", kUInt, 0, &(fMaxSamp[0]), &fNstrips_hit },
@@ -1236,6 +1244,26 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "strip.ontrackV", "V strip on track", kUInt, 0, &(fStripVonTrack[0]), &fNstrips_hit },
     { nullptr },
   };
+
+  Int_t ret = DefineVarsFromList( varstrip, mode );
+
+  if( ret != kOK )
+    return ret;
+
+  VarDef varstrip_goodADC[] = {
+    { "strip.nstripsfired_goodADC", "Number of good-ADC strips fired", kUInt, 0, &fNstrips_hit_goodADC },
+    { "strip.ADCsamples_goodADC", "MC Good ADC samples (index = isamp+Nsamples*istrip)", kInt, 0, &(fGoodADCsamples1D[0]), &fNdecoded_goodADCsamples},
+    { "strip.ADCsum_goodADC", "Sum of Good ADC samples on a strip", kDouble, 0, &(fGoodADCsums[0]), &fNstrips_hit_goodADC },
+    { "strip.ADCavg_goodADC", "average of Good ADC samples on a strip", kDouble, 0, &(fStripGoodADCavg[0]), &fNstrips_hit_goodADC },
+    { "strip.IsU_goodADC", "U strip? good-ADC", kUInt, 0, &(fStripIsU_goodADC[0]), &fNstrips_hit_goodADC },
+    { "strip.IsV_goodADC", "V strip? good-ADC", kUInt, 0, &(fStripIsV_goodADC[0]), &fNstrips_hit_goodADC },
+    { nullptr },
+  };
+
+  ret = DefineVarsFromList( varstrip_goodADC, mode );
+
+  if( ret != kOK )
+    return ret;
   
   // //Raw strip info:
   // RVarDef varstrip[] = {
@@ -1256,11 +1284,6 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
   //   { nullptr },
   // };
 
-
-  Int_t ret = DefineVarsFromList( varstrip, mode );
-
-  if( ret != kOK )
-    return ret;
 
   //Note: for both 1D clusters and 2D hits,
   //we should add some of the new variables relating to deconvolution in these arrays, but
@@ -1402,7 +1425,9 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
   fNstrips_hitV = 0;
   fNstrips_hitU_neg = 0;
   fNstrips_hitV_neg = 0;
+  fNstrips_hit_goodADC = 0;
   fNdecoded_ADCsamples = 0;
+  fNdecoded_goodADCsamples = 0;
   fIsDecoded = false;
 
   fClustering1DIsDone = false;
@@ -1483,6 +1508,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
   fNstrips_hitV = 0;
   fNstrips_hitU_neg = 0;
   fNstrips_hitV_neg = 0;
+
+  fNstrips_hit_goodADC = 0;
   
   //UInt_t MAXNSAMP_PER_APV = fN_APV25_CHAN * fN_MPD_TIME_SAMP;
 
@@ -1739,7 +1766,10 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
     }//End check if CM_ENABLED
     
     Int_t nsamp = evdata.GetNumHits( it->crate, it->slot, effChan );
-   
+    if ( nsamp > fN_APV25_CHAN*fN_MPD_TIME_SAMP ) {
+      std::cout << "nsamp TOO BIG = " << nsamp << ". Setting to 128*6." << std::endl;
+      nsamp = fN_APV25_CHAN*fN_MPD_TIME_SAMP;
+    }
     if( nsamp > 0 ){ //This APV card has data!
       
       // Temporary variable to store the number of hits above negative saturation threshold
@@ -2546,7 +2576,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	    fADCsamples_deconv[fNstrips_hit][isamp] = DeconvADCtemp[isamp];
 
-      fGoodADCsamples[fNstrips_hit][isamp] = goodADCtemp[isamp];
+      //fGoodADCsamples[fNstrips_hit][isamp] = goodADCtemp[isamp];
 
 	    ADCsum_deconv += DeconvADCtemp[isamp];
 
@@ -2581,7 +2611,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    fADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = ADCtemp[isamp];
 	    fRawADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = rawADCtemp[isamp];
 	    fADCsamplesDeconv1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = fADCsamples_deconv[fNstrips_hit][isamp];
-      fGoodADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit] = goodADCtemp[isamp];
+      // fGoodADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit] = goodADCtemp[isamp];
 	    
 	    if( fKeepStrip[fNstrips_hit] && hADCfrac_vs_timesample_allstrips != NULL ){
 	      hADCfrac_vs_timesample_allstrips->Fill( isamp, ADCtemp[isamp]/ADCsum_temp );
@@ -2676,7 +2706,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	  //  fADCsums.push_back( ADCsum_temp ); //sum of all (pedestal-subtracted) samples
 	  fADCsums[fNstrips_hit] = ADCsum_temp;
-	  fgoodADCsums[fNstrips_hit] = goodADCsum_temp;
+	  //fGoodADCsums[fNstrips_hit] = goodADCsum_temp;
 
 	  //  fStripADCavg.push_back( ADCsum_temp/double(fN_MPD_TIME_SAMP) );
 	  fStripADCavg[fNstrips_hit] = ADCsum_temp/double(fN_MPD_TIME_SAMP);
@@ -2713,11 +2743,39 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  
 	  //if ( fgoodADCsums[fNstrips_hit] != 0 ) std::cout << "strip : ADC : goodADC = " << fStrip[fNstrips_hit] << " : " << fADCsamples[fNstrips_hit][isamp] << " : " << fGoodADCsamples[fNstrips_hit][isamp] << std::endl;
 	  fNstrips_hit++;
-	  fNstrips_hit_pos++;
-	
-	  
+	  fNstrips_hit_pos++;	  
 	  
 	} //check if passed zero suppression cuts
+
+
+  /////// GOOD-ADC filling. Only relevant for MC data and if the good-ADC analysis is requested (to be implemented).
+  if ( fIsMC /*&& goodADCsum_temp/double(fN_MPD_TIME_SAMP) > fZeroSuppressRMS*rmstemp*/ ){
+
+    fStrip_goodADC[fNstrips_hit_goodADC] = strip;
+    fAxis_goodADC[fNstrips_hit_goodADC] = axis;
+    fStripRaw_goodADC[fNstrips_hit_goodADC] = rawStrip[fN_MPD_TIME_SAMP * istrip];
+    fKeepStrip_goodADC[fNstrips_hit_goodADC] = true;
+
+    for ( Int_t isamp=0; isamp<fN_MPD_TIME_SAMP; isamp++ ){
+
+      fGoodADCsamples[fNstrips_hit_goodADC][isamp] = goodADCtemp[isamp];
+      fGoodADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit_goodADC] = goodADCtemp[isamp];
+    }
+
+    fGoodADCsums[fNstrips_hit_goodADC] = goodADCsum_temp;
+    fStripGoodADCavg[fNstrips_hit_goodADC] = goodADCsum_temp/double(fN_MPD_TIME_SAMP);
+    
+    Int_t isU = (axis == SBSGEM::kUaxis) ? 1 : 0;
+    Int_t isV = (axis == SBSGEM::kVaxis) ? 1 : 0;
+
+    fStripIsU_goodADC[fNstrips_hit_goodADC] = isU;
+    fStripIsV_goodADC[fNstrips_hit_goodADC] = isV;
+
+    // fStripUonTrack_goodADC[fNstrips_hit_goodADC] = 0;
+    // fStripVonTrack_goodADC[fNstrips_hit_goodADC] = 0;
+    
+    fNstrips_hit_goodADC++;
+  } // end if MC and good-ADC analysis requested and passed zero-suppresion.
 
 	/////// Negative pulse study, This is an exact copy of the loop above but instead stores the negative ADC info. "Keep" is set
 	/////// to false regardless so these strips will not be used for any of the normal clustering and tracking algorithms. They 
@@ -2901,7 +2959,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
   } //end loop on decode map entries for this module
 
   fNdecoded_ADCsamples = fNstrips_hit * fN_MPD_TIME_SAMP;
-  
+  fNdecoded_goodADCsamples = fNstrips_hit_goodADC * fN_MPD_TIME_SAMP;
   //We will want to resize the 
 
   //resize all the "decoded strip" arrays to the actual number of fired strips:
@@ -4094,7 +4152,7 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
       clusttemp.hitindex.push_back( hitindex[istrip] ); //do we use this anywhere? Yes, it is good to keep track of this if we want to access raw strip info later on 
 				       //sumADC += ADCstrip;
       sumADC += fADCsums[hitindex[istrip]]*splitfraction[istrip];
-      sumgoodADC += fgoodADCsums[hitindex[istrip]];
+      sumgoodADC += fGoodADCsums[hitindex[istrip]];
 				       
       sumADCdeconv += ADCstrip_deconv;
       //sumADCdeconv_combo += fADCmaxDeconvCombo[hitindex[istrip]]*splitfraction[istrip];
@@ -4815,17 +4873,17 @@ void SBSGEMModule::find_goodADC_clusters_1D( SBSGEM::GEMaxis_t axis ){
   std::map<UShort_t, UInt_t> hitindex; //key = strip ID, mapped value = index in decoded hit array, needed to access the other information efficiently:
   std::map<UShort_t, Double_t> ADC_strip; // These are the (configuration-dependent) quantities we use for clustering.
 
-  for ( int ihit=0; ihit < fNstrips_hit; ihit++ ){
+  for ( int ihit=0; ihit < fNstrips_hit_goodADC; ihit++ ){
 
-    if ( fAxis[ihit] == axis && fgoodADCsums[ihit] > 0 ){ // Only fill if we have good-ADC.
+    if ( fAxis_goodADC[ihit] == axis && fGoodADCsums[ihit] > 0 ){ // Only fill if we have good-ADC.
 
-      bool newstrip = (striplist.insert( fStrip[ihit] )).second;
+      bool newstrip = (striplist.insert( fStrip_goodADC[ihit] )).second;
 
       if ( newstrip ){ // should always be true:
-        hitindex[fStrip[ihit]] = ihit;
+        hitindex[fStrip_goodADC[ihit]] = ihit;
 
         // Do clustering using sums of ADC values over all time samples similar to the regular 1D clustering method.
-        ADC_strip[fStrip[ihit]] = fgoodADCsums[ihit]; 
+        ADC_strip[fStrip[ihit]] = fGoodADCsums[ihit]; 
       }      
     }
   }// End loop over hits.
@@ -4991,11 +5049,11 @@ void SBSGEMModule::find_goodADC_clusters_1D( SBSGEM::GEMaxis_t axis ){
         clusttemp.ADCsamples[isamp] += fGoodADCsamples[hitindex[istrip]][isamp];
       }
 
-      clusttemp.stripADCsum.push_back( fgoodADCsums[hitindex[istrip]] );
+      clusttemp.stripADCsum.push_back( fGoodADCsums[hitindex[istrip]] );
       clusttemp.hitindex.push_back( hitindex[istrip] );
 
-      sumADC += fgoodADCsums[hitindex[istrip]];
-      sumgoodADC += fgoodADCsums[hitindex[istrip]];
+      sumADC += fGoodADCsums[hitindex[istrip]];
+      sumgoodADC += fGoodADCsums[hitindex[istrip]];
 
       if ( std::abs( istrip - stripmax ) <= std::max(UShort_t(1),std::min(maxsepcoord,maxsep)) ){
         sumx += hitpos * ADCstrip;
