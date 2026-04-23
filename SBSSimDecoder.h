@@ -345,6 +345,9 @@ protected:
   
   //TH1D* h1_sizeHCal;
   //TH1D* h1_sizeGEMs;
+
+  int countwords_read_ft;
+  int countwords_loaded_ft;
   
   //Int_t ChanFromROC( std::string detname, Int_t crate, Int_t slot, Int_t chan ) const;
   /*

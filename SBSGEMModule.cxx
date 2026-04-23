@@ -1766,10 +1766,18 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
     }//End check if CM_ENABLED
     
     Int_t nsamp = evdata.GetNumHits( it->crate, it->slot, effChan );
+<<<<<<< HEAD
     if ( nsamp > fN_APV25_CHAN*fN_MPD_TIME_SAMP ) {
       std::cout << "nsamp TOO BIG = " << nsamp << ". Setting to 128*6." << std::endl;
       nsamp = fN_APV25_CHAN*fN_MPD_TIME_SAMP;
     }
+=======
+    //for ANU: printout of number of samples off the crate/slot/apv.
+    if(strcmp(GetParent()->GetName(), "gemFT")==0 && nsamp>0)cout << " module " << GetName() << " crate " << it->crate << " slot " << it->slot << " apv " << effChan <<  " nsamps " << nsamp << endl;
+    // if(nsamp>128*6)
+    //   std::cout << " Nsamps = " <<  nsamp << " > " << 128*6 << std::endl;
+   
+>>>>>>> efuchey/gem_mc_frac
     if( nsamp > 0 ){ //This APV card has data!
       
       // Temporary variable to store the number of hits above negative saturation threshold
@@ -1808,7 +1816,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
       // to populate the local arrays; otherwise this code is getting too confusing and bug-prone:
       // First loop over the hits: populate strip, raw strip, raw ADC, ped sub ADC and common-mode-subtracted aDC;
       //ALSO, if this is a full readout event, count the number of hits above the minimum:   
-      
+
       for( int iraw=0; iraw<nsamp; iraw++ ){ //NOTE: iraw = isamp + fN_MPD_TIME_SAMP * istrip
 	int strip = evdata.GetRawData( it->crate, it->slot, effChan, iraw );
 	UInt_t decoded_rawADC = evdata.GetData( it->crate, it->slot, effChan, iraw );
@@ -1822,7 +1830,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  //the actual strip number should be the last 7 bits of strip if we have this "good adc" encoded
 	  strip = strip & 0x7F;    
 	}
-	
+
 	int isamp = iraw%fN_MPD_TIME_SAMP;
 	  
 	Int_t ADC = Int_t( decoded_rawADC );
@@ -1842,6 +1850,9 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	rawADC[iraw] = ADC;
   goodADC[iraw] = ADC_good;
+	// if(nsamp>128*6){
+	//   cout << " Det: " << GetName() << ", " << GetParent()->GetName() << " GEM decode: iraw " << iraw << " strip " << strip << " samp " << isamp << " raw adc " <<  decoded_rawADC << " adc " <<  ADC << " adc good? " << ADC_good << endl;
+	// }
 	//cout << GetParent()->GetName() << endl;
 	//if(strcmp(GetParent()->GetName(), "gemFT")==0)cout << "GEM decode: iraw " << iraw << " strip " << strip << " samp " << isamp << " raw adc " <<  decoded_rawADC << " adc " <<  ADC << " adc good? " << ADC_good << endl;
 	

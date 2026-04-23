@@ -1408,10 +1408,14 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 
   //GEP GEMs
   if(strcmp(detname.c_str(), "sbs.gemFT")==0){
+    //for ANU: counters for number of words readout and loaded
+    countwords_read_ft = 0;
+    countwords_loaded_ft = 0;
+    
     //cout << fPx << " " << fPy << " " << fPz << "   " << fVz << endl;
     samps.clear();  
     strips.clear();  
-    //cout << " ouh " << detname.c_str() << " " << simev->Tgep->Harm_FT_dighit_nstrips << endl;
+    //cout << " event number " << simev->EvtID << " number of strips*samples for " << detname.c_str() << ": " << simev->Tgep->Harm_FT_dighit_nstrips << endl;
     assert(simev->Tgep->b_Harm_FT_dighit_nstrips);
     for(int j = 0; j<simev->Tgep->Harm_FT_dighit_nstrips; j++){
       loadevt = false;
@@ -1420,6 +1424,8 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
       apvnum = APVnum(detname, mod, lchan, crate, slot, chan);
       
       if(simev->Tgep->Harm_FT_dighit_samp->at(j)>=0){
+	countwords_read_ft++;
+
 	strips.push_back(chan);
 	// if dighit_adc is negative, it will store samps as 2^32 + adc, which will mess up the encoding
 	// therefore, we need to "preencode" samps as 2^13+adc instead of 2^32+adc if adc is negative
@@ -1431,13 +1437,16 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	  //adc < 0: store adc in samps vector as 2^13+adc:
 	  samps.push_back((1<<13)+simev->Tgep->Harm_FT_dighit_adc->at(j));
 	}
-	goodsamps.push_back(simev->Tgep->Harm_FT_dighit_adc_good->at(j));
+	if(simev->Tgep->Harm_FT_dighit_adc_good){
+	  goodsamps.push_back(simev->Tgep->Harm_FT_dighit_adc_good->at(j));
+	}else{
+	  goodsamps.push_back(0);
+	}
       }
       
       if(fDebug>3)
 	cout << " mod " << mod << " lchan " << lchan << " crate " << crate << " slot " << slot << " apvnum " << apvnum << " chan " << chan << " samp " << simev->Tgep->Harm_FT_dighit_samp->at(j)  << " adc " << simev->Tgep->Harm_FT_dighit_adc->at(j) << " good " << simev->Tgep->Harm_FT_dighit_adc_good->at(j) << endl;
       //if(mod>=26 && simev->Tgep->Harm_FT_dighit_samp->at(j)==5)cout << mod << " " << lchan << " " << apvnum << endl;
-      
       if(j==simev->Tgep->Harm_FT_dighit_nstrips-1){
 	loadevt = true;
       }else if(mod!=simev->Tgep->Harm_FT_dighit_module->at(j+1) ||
@@ -1446,7 +1455,7 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	       ){
 	loadevt = true;
       }
-	
+      
       if(loadevt){
 	if( crate >= 0 || slot >=  0 ) {
 	  sldat = crateslot[idx(crate,slot)].get();
@@ -1458,6 +1467,7 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	  //I think I'm onto something here, but I also need to transmit strip num
 	  myev->push_back(SBSSimDataDecoder::EncodeHeader(9, apvnum, samps.size()));
 	  for(int k = 0; k<(int)samps.size(); k++){
+	    countwords_loaded_ft++;
 	    // cout << " " << samps[k];
 	    // Encode "adc_good" in the "free" bits for the myev word
 	    //cout << strips[k] << "  " << samps[k] << " " << goodsamps[k] << " " << strips[k]*(1<<13)+samps[k]+goodsamps[k]*(1<<20) << " => ";// << endl;
@@ -1475,6 +1485,9 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	strips.clear();
       }
     }
+    //if(countwords_read_ft != countwords_loaded_ft || countwords_loaded_ft != simev->Tgep->Harm_FT_dighit_nstrips)
+    //for ANU: Printout of number of words read and loaded
+    cout << " event number " << simev->EvtID << " number of strips*samples for " << detname.c_str() << ": " << simev->Tgep->Harm_FT_dighit_nstrips << " *** numbers of words read: " << countwords_read_ft << " loaded " << countwords_loaded_ft << " *** " << endl;
   }
   
   if(strcmp(detname.c_str(), "sbs.gemFPP")==0){
@@ -1500,7 +1513,11 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	  //adc < 0: store adc in samps vector as 2^13+adc:
 	  samps.push_back((1<<13)+simev->Tgep->Harm_FPP1_dighit_adc->at(j));
 	}
-	goodsamps.push_back(simev->Tgep->Harm_FPP1_dighit_adc_good->at(j));
+	if(simev->Tgep->Harm_FPP1_dighit_adc_good){
+	  goodsamps.push_back(simev->Tgep->Harm_FPP1_dighit_adc_good->at(j));
+	}else{
+	  goodsamps.push_back(0);
+	}
       }
       
       if(fDebug>3)
