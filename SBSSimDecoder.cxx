@@ -1415,6 +1415,7 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
     //cout << fPx << " " << fPy << " " << fPz << "   " << fVz << endl;
     samps.clear();  
     strips.clear();  
+    goodsamps.clear();
     //cout << " event number " << simev->EvtID << " number of strips*samples for " << detname.c_str() << ": " << simev->Tgep->Harm_FT_dighit_nstrips << endl;
     assert(simev->Tgep->b_Harm_FT_dighit_nstrips);
     for(int j = 0; j<simev->Tgep->Harm_FT_dighit_nstrips; j++){
@@ -1483,17 +1484,19 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	
 	samps.clear();
 	strips.clear();
+  goodsamps.clear();
       }
     }
     //if(countwords_read_ft != countwords_loaded_ft || countwords_loaded_ft != simev->Tgep->Harm_FT_dighit_nstrips)
     //for ANU: Printout of number of words read and loaded
-    cout << " event number " << simev->EvtID << " number of strips*samples for " << detname.c_str() << ": " << simev->Tgep->Harm_FT_dighit_nstrips << " *** numbers of words read: " << countwords_read_ft << " loaded " << countwords_loaded_ft << " *** " << endl;
+    //cout << " event number " << simev->EvtID << " number of strips*samples for " << detname.c_str() << ": " << simev->Tgep->Harm_FT_dighit_nstrips << " *** numbers of words read: " << countwords_read_ft << " loaded " << countwords_loaded_ft << " *** " << endl;
   }
   
   if(strcmp(detname.c_str(), "sbs.gemFPP")==0){
     //cout << fPx << " " << fPy << " " << fPz << "   " << fVz << endl;
     samps.clear();  
-    strips.clear();  
+    strips.clear();
+    goodsamps.clear();
     //cout << " ouh " << detname.c_str() << " " << simev->Tgep->Harm_FPP1_dighit_nstrips << endl;
     assert(simev->Tgep->b_Harm_FPP1_dighit_nstrips);
     for(int j = 0; j<simev->Tgep->Harm_FPP1_dighit_nstrips; j++){
@@ -1555,6 +1558,7 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	
 	samps.clear();
 	strips.clear();
+  goodsamps.clear();
       }
     }
   }
