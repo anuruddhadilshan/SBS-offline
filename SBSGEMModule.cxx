@@ -1705,8 +1705,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
       //if( chan != effChan ) continue; // 
 
     if( fIsMC ) {
-      CM_ENABLED = fCommonModeFlag != 0 && fCommonModeFlag != 1 && !fPedestalMode; //true; // Commented out by ADR for 'full r/o' digitized data replay.
-      BUILD_ALL_SAMPLES = !fOnlineZeroSuppression && !CM_ENABLED; //false; // Commented out by ADR for 'full r/o' digitized data replay.
+      CM_ENABLED = fCommonModeFlag != 0 && fCommonModeFlag != 1 && !fPedestalMode; //true; --> Commented out by ADR for 'full r/o' digitized data replay.
+      BUILD_ALL_SAMPLES = !fOnlineZeroSuppression && !CM_ENABLED; //false; --> Commented out by ADR for 'full r/o' digitized data replay.
     }
 
     //Let's see if we can actually decode the MPD debug headers:
@@ -1766,18 +1766,18 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
     }//End check if CM_ENABLED
     
     Int_t nsamp = evdata.GetNumHits( it->crate, it->slot, effChan );
-<<<<<<< HEAD
-    if ( nsamp > fN_APV25_CHAN*fN_MPD_TIME_SAMP ) {
-      std::cout << "nsamp TOO BIG = " << nsamp << ". Setting to 128*6." << std::endl;
-      nsamp = fN_APV25_CHAN*fN_MPD_TIME_SAMP;
-    }
-=======
+
+    // if ( nsamp > fN_APV25_CHAN*fN_MPD_TIME_SAMP ) {
+    //   std::cout << "nsamp TOO BIG = " << nsamp << ". Setting to 128*6." << std::endl;
+    //   nsamp = fN_APV25_CHAN*fN_MPD_TIME_SAMP;
+    // }
+
     //for ANU: printout of number of samples off the crate/slot/apv.
-    if(strcmp(GetParent()->GetName(), "gemFT")==0 && nsamp>0)cout << " module " << GetName() << " crate " << it->crate << " slot " << it->slot << " apv " << effChan <<  " nsamps " << nsamp << endl;
+    //if(strcmp(GetParent()->GetName(), "gemFT")==0 && nsamp>0)cout << " module " << GetName() << " crate " << it->crate << " slot " << it->slot << " apv " << effChan <<  " nsamps " << nsamp << endl;
     // if(nsamp>128*6)
     //   std::cout << " Nsamps = " <<  nsamp << " > " << 128*6 << std::endl;
    
->>>>>>> efuchey/gem_mc_frac
+
     if( nsamp > 0 ){ //This APV card has data!
       
       // Temporary variable to store the number of hits above negative saturation threshold
@@ -2760,7 +2760,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 
   /////// GOOD-ADC filling. Only relevant for MC data and if the good-ADC analysis is requested (to be implemented).
-  if ( fIsMC /*&& goodADCsum_temp/double(fN_MPD_TIME_SAMP) > fZeroSuppressRMS*rmstemp*/ ){
+  if ( fIsMC  && goodADCsum_temp/double(fN_MPD_TIME_SAMP) > fZeroSuppressRMS*rmstemp ){
 
     fStrip_goodADC[fNstrips_hit_goodADC] = strip;
     fAxis_goodADC[fNstrips_hit_goodADC] = axis;
@@ -4894,97 +4894,123 @@ void SBSGEMModule::find_goodADC_clusters_1D( SBSGEM::GEMaxis_t axis ){
         hitindex[fStrip_goodADC[ihit]] = ihit;
 
         // Do clustering using sums of ADC values over all time samples similar to the regular 1D clustering method.
-        ADC_strip[fStrip[ihit]] = fGoodADCsums[ihit]; 
+        ADC_strip[fStrip_goodADC[ihit]] = fGoodADCsums[ihit];        
       }      
     }
   }// End loop over hits.
 
   std::set<UShort_t> localmaxima;
   std::map<UShort_t,bool> islocalmax;
+  UShort_t maximumstrip;
+  double threestripsum_max = 0;
 
-  for ( std::set<UShort_t>::iterator i=striplist.begin(); i != striplist.end(); ++i ){
+  for ( std::set<UShort_t>::iterator i = striplist.begin(); i != striplist.end(); ++i ){
 
     int strip = *i;
-    islocalmax[strip] = false;
+    double adc_stripmid = (double)ADC_strip[strip];
+    double adc_stripleft = 0., adc_stripright = 0.;
+    
+    if ( striplist.find( strip - 1 ) != striplist.end() ) adc_stripleft = (double)ADC_strip[strip-1];
+    //else adc_stripleft = 0.; 
 
-    double sumstrip = (double)ADC_strip[strip];
-    double sumleft = 0.0;
-    double sumright = 0.0;
+    if ( striplist.find( strip + 1 ) != striplist.end() ) adc_stripright = (double)ADC_strip[strip+1];
+    //else adc_stripright = 0.;
 
-    if ( striplist.find( strip - 1 ) != striplist.end() ) sumleft = ADC_strip[strip-1];
-    if ( striplist.find( strip + 1 ) != striplist.end() ) sumright = ADC_strip[strip+1];
+    double this_threestripsum = adc_stripleft + adc_stripmid + adc_stripright;
 
-    if ( sumstrip >= sumleft && sumstrip >= sumright ){
-      islocalmax[strip] = true;
-      localmaxima.insert(strip);
+    if ( this_threestripsum > threestripsum_max ) {
+
+      threestripsum_max = this_threestripsum;
+      maximumstrip = strip;      
     }
   }
+
+  if ( striplist.size() > 0  ) localmaxima.insert(maximumstrip);
+
+  // for ( std::set<UShort_t>::iterator i=striplist.begin(); i != striplist.end(); ++i ){
+
+  //   int strip = *i;
+  //   islocalmax[strip] = false;
+
+  //   double sumstrip = (double)ADC_strip[strip];
+  //   double sumleft = 0.0;
+  //   double sumright = 0.0;
+
+  //   if ( striplist.find( strip - 1 ) != striplist.end() ) sumleft = ADC_strip[strip-1];
+  //   if ( striplist.find( strip + 1 ) != striplist.end() ) sumright = ADC_strip[strip+1];
+
+  //   if ( sumstrip >= sumleft && sumstrip >= sumright ){
+  //     islocalmax[strip] = true;
+  //     localmaxima.insert(strip);
+  //   }
+  // }
 
   // Now check for prominance of thse local-maxima just as in the regular clustering.
-  std::vector<int> peakstoerase;
+  // std::vector<int> peakstoerase;
 
-  for ( std::set<UShort_t>::iterator i=localmaxima.begin(); i != localmaxima.end(); ++i  ){
+  // for ( std::set<UShort_t>::iterator i=localmaxima.begin(); i != localmaxima.end(); ++i  ){
 
-    int stripmax = *i;
-    double ADCmax = ADC_strip[stripmax];
-    double prominence = ADCmax;
-    int striplo = stripmax, striphi = stripmax;
-    double ADCminright = ADCmax, ADCminleft = ADCmax;
+  //   int stripmax = *i;
+  //   double ADCmax = ADC_strip[stripmax];
+  //   double prominence = ADCmax;
+  //   int striplo = stripmax, striphi = stripmax;
+  //   double ADCminright = ADCmax, ADCminleft = ADCmax;
 
-    bool higherpeakright = false, higherpeakleft = false;
-    int peakright = -1, peakleft = -1;
+  //   bool higherpeakright = false, higherpeakleft = false;
+  //   int peakright = -1, peakleft = -1;
 
-    while ( striplist.find( striphi+1 ) != striplist.end() ){
-      striphi++;
-      Double_t ADCtest = ADC_strip[striphi];
+  //   while ( striplist.find( striphi+1 ) != striplist.end() ){
+  //     striphi++;
+  //     Double_t ADCtest = ADC_strip[striphi];
 
-      if ( ADCtest < ADCminright && !higherpeakright ){//as long as we haven't yet found a higher peak to the right, this is the lowest point between the current maximum and the next higher peak to the right:
-        ADCminright = ADCtest;
-      }
+  //     if ( ADCtest < ADCminright && !higherpeakright ){//as long as we haven't yet found a higher peak to the right, this is the lowest point between the current maximum and the next higher peak to the right:
+  //       ADCminright = ADCtest;
+  //     }
 
-      if ( islocalmax[striphi] && ADCtest > ADCmax ){//then this peak is in a contiguous group with another higher peak to the right:
-        higherpeakright = true;
-        peakright = striphi;
-      }
-    }
+  //     if ( islocalmax[striphi] && ADCtest > ADCmax ){//then this peak is in a contiguous group with another higher peak to the right:
+  //       higherpeakright = true;
+  //       peakright = striphi;
+  //     }
+  //   }
 
-    while( striplist.find(striplo-1) != striplist.end() ){
-      striplo--;
-      //Double_t ADCtest = fADCsums[hitindex[striplo]];
-      Double_t ADCtest = ADC_strip[striplo];
-      if( ADCtest < ADCminleft && !higherpeakleft ){ //as long as we haven't yet found a higher peak to the left, this is the lowest point between the current maximum and the next higher peak to the left:
-        ADCminleft = ADCtest;
-      }
+  //   while( striplist.find(striplo-1) != striplist.end() ){
+  //     striplo--;
+  //     //Double_t ADCtest = fADCsums[hitindex[striplo]];
+  //     Double_t ADCtest = ADC_strip[striplo];
+  //     if( ADCtest < ADCminleft && !higherpeakleft ){ //as long as we haven't yet found a higher peak to the left, this is the lowest point between the current maximum and the next higher peak to the left:
+  //       ADCminleft = ADCtest;
+  //     }
 
-      if( islocalmax[striplo] && ADCtest > ADCmax ){ //then this peak is in a contiguous group with another higher peak to the left:
-        higherpeakleft = true;
-        peakleft = striplo;
-      }
-    }
+  //     if( islocalmax[striplo] && ADCtest > ADCmax ){ //then this peak is in a contiguous group with another higher peak to the left:
+  //       higherpeakleft = true;
+  //       peakleft = striplo;
+  //     }
+  //   }
 
-    bool peak_close = false;
-    if ( !higherpeakleft ) ADCminleft = 0.0;
-    if ( !higherpeakright ) ADCminright = 0.0;
+  //   bool peak_close = false;
+  //   if ( !higherpeakleft ) ADCminleft = 0.0;
+  //   if ( !higherpeakright ) ADCminright = 0.0;
 
-    if ( higherpeakleft || higherpeakright ) {//this peak is contiguous with higher peaks on either the left or right or both:
-       prominence = ADCmax - std::max( ADCminleft, ADCminright );
+  //   if ( higherpeakleft || higherpeakright ) {//this peak is contiguous with higher peaks on either the left or right or both:
+  //      prominence = ADCmax - std::max( ADCminleft, ADCminright );
 
-       if ( higherpeakleft /*&& std::abs( peakleft - stripmax ) <= 2*maxsep*/ ) peak_close = true;
-       if ( higherpeakright /*&& std::abs( peakright - stripmax ) <= 2*maxsep*/ ) peak_close = true;
+  //      if ( higherpeakleft && std::abs( peakleft - stripmax ) <= 2*maxsep ) peak_close = true;
+  //      if ( higherpeakright && std::abs( peakright - stripmax ) <= 2*maxsep ) peak_close = true;
 
-       if ( peak_close && prominence/ADCmax < fThresh_2ndMax_fraction ) peakstoerase.push_back( stripmax );
-    }
-  }
+  //      if ( peak_close && prominence/ADCmax < fThresh_2ndMax_fraction ) peakstoerase.push_back( stripmax );
+  //   }
+  // }
 
-  // Erase "insignificant" peaks (those in contiguous grouping with higher peak with prominence belwo threhoslds):
-  for ( int ipeak : peakstoerase ){
-    localmaxima.erase( ipeak );
-    islocalmax[ipeak] = false;
-    //std::cout << "Erasing peak: " << ipeak << std::endl;
-  }
+  // // Erase "insignificant" peaks (those in contiguous grouping with higher peak with prominence belwo threhoslds):
+  // for ( int ipeak : peakstoerase ){
+  //   localmaxima.erase( ipeak );
+  //   islocalmax[ipeak] = false;
+  //   //std::cout << "Erasing peak: " << ipeak << std::endl;
+  // }
 
   clusters.resize( localmaxima.size() );
-
+  // if ( localmaxima.size() > 1 ) std::cout << "Local Maxima bigger than 1!!!" << std::endl;
+  // else std::cout << "just One Local Max peak. Good." << std::endl;
   // Cluster formation and cluster splitting from local maxima:
   for ( auto i = localmaxima.begin(); i != localmaxima.end(); ++i ){
 
@@ -5015,8 +5041,8 @@ void SBSGEMModule::find_goodADC_clusters_1D( SBSGEM::GEMaxis_t axis ){
     //cluster growing complete.
 
     int nstrips = striphi-striplo+1;
-
-    if ( nstrips < 2 ) continue; // Let's just skip clusters smaller than 2 strips for now.
+    //std::cout << "Nstrips: " << nstrips << std::endl;
+    //if ( nstrips < 2 ) continue; // Let's just skip clusters smaller than 2 strips for now.
 
     double sumx = 0.0, sumx2 = 0.0, sumADC = 0.0, sumgoodADC = 0.0, sumt = 0.0, sumt2 = 0.0;
     double sumwx = 0.0;
