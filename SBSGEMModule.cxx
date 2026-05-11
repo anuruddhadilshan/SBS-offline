@@ -5163,17 +5163,23 @@ void SBSGEMModule::fill_goodADC_2D_hit_arrays(){
   fHits_goodADC.clear();
   fN2Dhits_goodADC = 0;
 
-  fHits_goodADC.resize( std::min( fNclustU_goodADC*fNclustV_goodADC, fMAX2DHITS ) );
+  UInt_t max_goodADC_hits = std::min( fNclustU_goodADC*fNclustV_goodADC, fMAX2DHITS );
+  fHits_goodADC.resize( max_goodADC_hits );
 
   bool maxhits_exceeded = false;
 
   for ( UInt_t iu=0; iu<fNclustU_goodADC; iu++ ){
     for ( UInt_t iv=0; iv<fNclustV_goodADC; iv++ ){
 
+      if ( fN2Dhits_goodADC >= fMAX2DHITS ){
+        maxhits_exceeded = true;
+        break;
+      }
+
       sbsgemhit_t hittemp;
 
       hittemp.keep = true;
-      hittemp.highquality = false;
+      hittemp.highquality = true; // For MC truth/good-ADC.
       hittemp.ontrack = false;
       hittemp.trackidx = -1;
       hittemp.iuclust = iu;
@@ -5208,11 +5214,19 @@ void SBSGEMModule::fill_goodADC_2D_hit_arrays(){
 
         hittemp.corrcoeff_clust = CorrCoeff( fN_MPD_TIME_SAMP, fUclusters_goodADC[iu].ADCsamples, fVclusters_goodADC[iv].ADCsamples );
 
+        //To do: define timing. Initialize to 0 for now.
+        hittemp.thit = 0.0;
+        hittemp.thitcorr = 0.0;
+        hittemp.tdiff = 0.0;
+
         fHits_goodADC[fN2Dhits_goodADC++] = hittemp;
       }
     }
+
+    if ( maxhits_exceeded ) break;
   }
 
+  fHits_goodADC.resize(fN2Dhits_goodADC);
 }
 
 void    SBSGEMModule::Print( Option_t* opt) const{
