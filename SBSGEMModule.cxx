@@ -5051,7 +5051,7 @@ void SBSGEMModule::find_goodADC_clusters_1D( SBSGEM::GEMaxis_t axis ){
 
     int nstrips = striphi-striplo+1;
     //std::cout << "Nstrips: " << nstrips << std::endl;
-    if ( nstrips < 2 ) continue; // Let's just skip clusters smaller than 2 strips => similar for regular ADC hits.
+    //if ( nstrips < 2 ) continue; // Let's just skip clusters smaller than 2 strips => similar for regular ADC hits.
 
     double sumx = 0.0, sumx2 = 0.0, sumADC = 0.0, sumgoodADC = 0.0, sumt = 0.0, sumt2 = 0.0;
     double sumwx = 0.0;
