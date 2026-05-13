@@ -138,7 +138,8 @@ Int_t SBSGEMSpectrometerTracker::ReadDatabase( const TDatime& date ){
   int multitracksearch = fMultiTrackSearch ? 1 : 0;
 
   int nontrackmode = fNonTrackingMode ? 1 : 0;
-  
+
+
   //  std::vector<int> mingoodhits; 
   //std::vector<double> chi2cut_space;
   //std::vector<double> chi2cut_hits;
@@ -213,6 +214,7 @@ Int_t SBSGEMSpectrometerTracker::ReadDatabase( const TDatime& date ){
     { "dthtarcut", &fdthtarcut, kDouble, 0, 1, 1},
     { "dphtar0", &fdphtar0, kDouble, 0, 1, 1},
     { "dphtarcut", &fdphtarcut, kDouble, 0, 1, 1},
+    { "do_goodADC_tracking", &fDoGoodADCTracking, kInt, 0, 1, 1}, //MC only: do we attept good-ADC tracking?
     {0}
   };
 
@@ -804,6 +806,19 @@ Int_t SBSGEMSpectrometerTracker::DefineVariables( EMode mode ){
     { "nclustu_layer_neg", "total number of negative U clusters by layer", "fNclustU_layer_neg" },
     { "nclustv_layer_neg", "total number of negative V clusters by layer", "fNclustV_layer_neg" },
     { "n2Dhit_layer", "total_number of 2D hits by layer", "fN2Dhit_layer" },
+    { "goodADCtrack.ntrack", "number of good-ADC / MC-truth tracks found", "fNtracks_found_goodADC" },
+    { "goodADCtrack.nhits", "number of good-ADC hits on track", "fNhitsOnTrack_goodADC" },
+    { "goodADCtrack.x", "Good-ADC track X at z=0 in TRANSPORT coordinates", "fXtrack_goodADC" },
+    { "goodADCtrack.y", "Good-ADC track Y at z=0 in TRANSPORT coordinates", "fYtrack_goodADC" },
+    { "goodADCtrack.xp", "Good-ADC track dx/dz in TRANSPORT coordinates", "fXptrack_goodADC" },
+    { "goodADCtrack.yp", "Good-ADC track dy/dz in TRANSPORT coordinates", "fYptrack_goodADC" },
+    { "goodADCtrack.chi2ndf", "Good-ADC straight-line track chi2/ndf", "fChi2Track_goodADC" },
+    { "goodADChit.trackindex", "good-ADC track index for this hit", "fGoodADCHitTrackIndex" },
+    { "goodADCtrackhit.module", "module index of good-ADC hit on track", "fGoodADCHitModule" },
+    { "goodADCtrackhit.layer", "layer index of good-ADC hit on track", "fGoodADCHitLayer" },
+    { "goodADCtrackhit.hitindex", "index in module fHits_goodADC array", "fGoodADCHitIndex" },
+    { "goodADCtrackhit.residu", "good-ADC hit u residual", "fGoodADCHitResidU" },
+    { "goodADCtrackhit.residv", "good-ADC hit v residual", "fGoodADCHitResidV" },
     //{ "nclustu_layer_miss", "total number of U clusters by layer in a module missing hits", "fNclustU_layer_miss" },
     //{ "nclustv_layer_miss", "total number of V clusters by layer in a module missing hits", "fNclustV_layer_miss" },
     { nullptr }
@@ -824,6 +839,7 @@ Int_t SBSGEMSpectrometerTracker::CoarseTrack( TClonesArray& tracks ){
     if( !fclustering_done ) hit_reconstruction();
     
     if( !ftracking_done ) find_tracks();
+    if( fIsMC && fDoGoodADCTracking && !fGoodADCTrackingDone ) find_goodADC_tracks();
 
     for( int itrack=0; itrack<fNtracks_found; itrack++ ){
       THaTrack *Track = AddTrack( tracks, fXtrack[itrack], fYtrack[itrack], fXptrack[itrack], fYptrack[itrack] );
@@ -862,6 +878,7 @@ Int_t SBSGEMSpectrometerTracker::FineTrack( TClonesArray& tracks ){
       if( !fclustering_done ) hit_reconstruction();
       
       if( !ftracking_done ) find_tracks();
+      if( fIsMC && fDoGoodADCTracking && !fGoodADCTrackingDone ) find_goodADC_tracks();
 
       //We don't necessarily know 
     

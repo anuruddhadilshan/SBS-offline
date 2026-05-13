@@ -38,6 +38,8 @@ SBSGEMTrackerBase::SBSGEMTrackerBase(){ //Set default values of important parame
   fMaxHitCombinations_Total = 1.e16;
   fTryFastTrack = true;
 
+  fDoGoodADCTracking = false; // Set good-ADC tracking OFF by default.
+
   //moved zero suppression/common-mode parameters to module class
   //  fOnlineZeroSuppression = false;
   // fZeroSuppress = true;
@@ -142,7 +144,7 @@ SBSGEMTrackerBase::SBSGEMTrackerBase(){ //Set default values of important parame
   fConstraintPenaltySigmaY = 0.1;
   fConstraintPenaltySigmaXp = 0.1;
   fConstraintPenaltySigmaYp = 0.1;
-  
+
 }
 
 SBSGEMTrackerBase::~SBSGEMTrackerBase(){
@@ -182,7 +184,20 @@ void SBSGEMTrackerBase::Clear(){ //Clear out any event-specific stuff
   fT0track.clear();
   fChi2Track.clear();
   fChi2TrackHitQuality.clear();
-  
+
+  fNtracks_found_goodADC = 0;
+  fNhitsOnTrack_goodADC.clear();
+  fModListTrack_goodADC.clear();
+  fLayerListTrack_goodADC.clear();
+  fHitListTrack_goodADC.clear();
+  fresidu_hits_goodADC.clear();
+  fresidv_hits_goodADC.clear();
+
+  fXtrack_goodADC.clear();
+  fYtrack_goodADC.clear();
+  fXptrack_goodADC.clear();
+  fYptrack_goodADC.clear();
+
   fNgoodhits = 0;
   fHitTrackIndex.clear();
   fHitModule.clear();
@@ -344,7 +359,7 @@ void SBSGEMTrackerBase::Clear(){ //Clear out any event-specific stuff
   //Moved this initialization to the derived classes
   //  fclustering_done = false;
   ftracking_done = false;
-
+  fGoodADCTrackingDone = false;
   //  fConstraintPoint_Front.clear();
   //  fConstraintPoint_Back.clear();
   
@@ -2255,6 +2270,244 @@ void SBSGEMTrackerBase::find_tracks(){
 
   //std::cout << "fill_good_hit_arrays() done..." << std::endl;
 
+}
+
+void SBSGEMTrackerBase::find_goodADC_tracks(){
+
+  if( fGoodADCTrackingDone ) return;
+
+  fGoodADCTrackingDone = true;
+
+  fNtracks_found_goodADC = 0;
+
+  fNhitsOnTrack_goodADC.clear();
+  fXtrack_goodADC.clear();
+  fYtrack_goodADC.clear();
+  fXptrack_goodADC.clear();
+  fYptrack_goodADC.clear();
+  fChi2Track_goodADC.clear();
+
+  fModListTrack_goodADC.clear();
+  fLayerListTrack_goodADC.clear();
+  fHitListTrack_goodADC.clear();
+
+  fresidu_hits_goodADC.clear();
+  fresidv_hits_goodADC.clear();
+
+  struct GoodADCHitRef {
+    Int_t layer;
+    Int_t module;
+    Int_t hit;
+  };
+
+  std::vector<GoodADCHitRef> goodhits;
+
+  // --------------------------------------------------------------------------
+  // 1. Collect one good-ADC 2D hit per layer.
+  //
+  // In the ideal MC-truth case, each layer should have exactly one good-ADC hit.
+  // If more than one appears, choose the one with the largest goodADC_Ehit.
+  // --------------------------------------------------------------------------
+
+  for( Int_t layer = 0; layer < fNlayers; layer++ ){
+
+    std::vector<GoodADCHitRef> layer_hits;
+
+    for( auto imod = fModuleListByLayer[layer].begin();
+         imod != fModuleListByLayer[layer].end(); ++imod ){
+
+      Int_t module = *imod;
+
+      if( module < 0 || module >= Int_t(fModules.size()) ) continue;
+      if( fModules[module] == nullptr ) continue;
+
+      for( UInt_t ihit = 0; ihit < fModules[module]->fN2Dhits_goodADC; ihit++ ){
+
+        if( ihit >= fModules[module]->fHits_goodADC.size() ) continue;
+
+        const sbsgemhit_t &hit = fModules[module]->fHits_goodADC[ihit];
+
+        if( !hit.keep ) continue;
+
+        layer_hits.push_back( { layer, module, Int_t(ihit) } );
+      }
+    }
+
+    if( layer_hits.size() == 1 ){
+      goodhits.push_back( layer_hits[0] );
+    } else if( layer_hits.size() > 1 ){
+
+      Int_t best = 0;
+      Double_t bestADC = -1.0;
+
+      for( Int_t i = 0; i < Int_t(layer_hits.size()); i++ ){
+
+        Int_t module = layer_hits[i].module;
+        Int_t ihit   = layer_hits[i].hit;
+
+        const sbsgemhit_t &hit = fModules[module]->fHits_goodADC[ihit];
+
+        if( i == 0 || hit.goodADC_Ehit > bestADC ){
+          best = i;
+          bestADC = hit.goodADC_Ehit;
+        }
+      }
+
+      goodhits.push_back( layer_hits[best] );
+    }
+  }
+
+  // Need at least fMinHitsOnTrack hits. Usually this is 3.
+  // With only two points, the straight line has zero degrees of freedom.
+  if( Int_t(goodhits.size()) < fMinHitsOnTrack ){
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // 2. Straight-line least-squares fit in tracker/global coordinates.
+  //
+  // Fit:
+  //   x(z) = xtrack + xptrack * z
+  //   y(z) = ytrack + yptrack * z
+  //
+  // This mirrors the normal CalcLineOfBestFit() logic.
+  // --------------------------------------------------------------------------
+
+  Double_t sumx  = 0.0;
+  Double_t sumy  = 0.0;
+  Double_t sumz  = 0.0;
+  Double_t sumxz = 0.0;
+  Double_t sumyz = 0.0;
+  Double_t sumz2 = 0.0;
+
+  Int_t nhits = 0;
+
+  for( const auto &ref : goodhits ){
+
+    const sbsgemhit_t &hit =
+      fModules[ref.module]->fHits_goodADC[ref.hit];
+
+    Double_t x = hit.xghit;
+    Double_t y = hit.yghit;
+    Double_t z = hit.zghit;
+
+    sumx  += x;
+    sumy  += y;
+    sumz  += z;
+    sumxz += x * z;
+    sumyz += y * z;
+    sumz2 += z * z;
+
+    nhits++;
+  }
+
+  Double_t denom = sumz2 * nhits - sumz * sumz;
+
+  if( fabs( denom ) < 1.0e-20 ){
+    return;
+  }
+
+  Double_t xptrack =
+    ( nhits * sumxz - sumx * sumz ) / denom;
+
+  Double_t yptrack =
+    ( nhits * sumyz - sumy * sumz ) / denom;
+
+  Double_t xtrack =
+    ( sumx * sumz2 - sumxz * sumz ) / denom;
+
+  Double_t ytrack =
+    ( sumy * sumz2 - sumyz * sumz ) / denom;
+
+  // --------------------------------------------------------------------------
+  // 3. Calculate UV residuals and chi2.
+  //
+  // This follows regular FitTrack(): build a track origin/direction, project
+  // into each module with GetUVTrack(), then compare against local uhit/vhit.
+  // --------------------------------------------------------------------------
+
+  TVector3 TrackOrigin( xtrack, ytrack, 0.0 );
+  TVector3 TrackDirection( xptrack, yptrack, 1.0 );
+  TrackDirection = TrackDirection.Unit();
+
+  std::vector<Double_t> uresid;
+  std::vector<Double_t> vresid;
+
+  std::vector<Int_t> modlist;
+  std::vector<Int_t> layerlist;
+  std::vector<Int_t> hitlist;
+
+  Double_t chi2 = 0.0;
+
+  for( const auto &ref : goodhits ){
+
+    Int_t layer  = ref.layer;
+    Int_t module = ref.module;
+    Int_t ihit   = ref.hit;
+
+    const sbsgemhit_t &hit =
+      fModules[module]->fHits_goodADC[ihit];
+
+    TVector2 UVtrack =
+      GetUVTrack( module, TrackOrigin, TrackDirection );
+
+    Double_t du = hit.uhit - UVtrack.X();
+    Double_t dv = hit.vhit - UVtrack.Y();
+
+    uresid.push_back( du );
+    vresid.push_back( dv );
+
+    modlist.push_back( module );
+    layerlist.push_back( layer );
+    hitlist.push_back( ihit );
+
+    chi2 += pow( du / fSigma_hitpos, 2 )
+          + pow( dv / fSigma_hitpos, 2 );
+  }
+
+  Double_t ndf = 2.0 * Double_t(nhits) - 4.0;
+
+  if( ndf <= 0.0 ){
+    return;
+  }
+
+  Double_t chi2ndf = chi2 / ndf;
+
+  // --------------------------------------------------------------------------
+  // 4. Store the good-ADC track.
+  // --------------------------------------------------------------------------
+
+  fNhitsOnTrack_goodADC.push_back( nhits );
+
+  fXtrack_goodADC.push_back( xtrack );
+  fYtrack_goodADC.push_back( ytrack );
+  fXptrack_goodADC.push_back( xptrack );
+  fYptrack_goodADC.push_back( yptrack );
+  fChi2Track_goodADC.push_back( chi2ndf );
+
+  fModListTrack_goodADC.push_back( modlist );
+  fLayerListTrack_goodADC.push_back( layerlist );
+  fHitListTrack_goodADC.push_back( hitlist );
+
+  fresidu_hits_goodADC.push_back( uresid );
+  fresidv_hits_goodADC.push_back( vresid );
+
+  // --------------------------------------------------------------------------
+  // 5. Mark good-ADC hits as on-track.
+  // --------------------------------------------------------------------------
+
+  Int_t itrack = fNtracks_found_goodADC;
+
+  for( Int_t ih = 0; ih < Int_t(goodhits.size()); ih++ ){
+
+    Int_t module = goodhits[ih].module;
+    Int_t ihit   = goodhits[ih].hit;
+
+    fModules[module]->fHits_goodADC[ihit].ontrack = true;
+    fModules[module]->fHits_goodADC[ihit].trackidx = itrack;
+  }
+
+  fNtracks_found_goodADC++;
 }
 
 void SBSGEMTrackerBase::fill_good_hit_arrays() { //this gets called at the end of track-finding. 
