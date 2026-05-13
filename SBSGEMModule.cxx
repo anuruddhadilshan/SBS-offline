@@ -2769,7 +2769,9 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 
   /////// GOOD-ADC filling. Only relevant for MC data and if the good-ADC analysis is requested (to be implemented).
-  if ( fIsMC  && goodADCsum_temp/double(fN_MPD_TIME_SAMP) > fZeroSuppressRMS*rmstemp ){
+  if ( fIsMC  && (!fZeroSuppress ||
+     ( ADCsum_temp/double(fN_MPD_TIME_SAMP) > fZeroSuppressRMS*rmstemp )) && 
+     goodADCsum_temp/double(fN_MPD_TIME_SAMP) > fZeroSuppressRMS*rmstemp ){
 
     fStrip_goodADC[fNstrips_hit_goodADC] = strip;
     fAxis_goodADC[fNstrips_hit_goodADC] = axis;
