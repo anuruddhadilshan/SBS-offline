@@ -226,6 +226,12 @@ SBSGEMModule::SBSGEMModule( const char *name, const char *description,
   fDeconvolutionFlag = 0; //Default should be zero
 
   fStoreAll1Dclusters = false;
+
+  fTSfracTrigPhaseIsInitialized = false;
+  fUseTSfracTrigPhaseCorr = false;
+  fTSfracTrigPhaseCorrFlag = -1;
+
+  fTrigPhase = 0; // to avoid compiler warning about use before initialization
   
   return;
 }
@@ -299,6 +305,9 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   int usecommonmoderollingaverage = fMeasureCommonMode ? 1 : 0;
   
   int correctcommonmode = fCorrectCommonMode ? 1 : 0;
+
+  int useTSfracTrigPhaseCorr = fUseTSfracTrigPhaseCorr ? 1 : 0;
+  //int tsfractrigphasecorrflag = fTSfracTrigPhaseCorrFlag; 
   
   std::vector<double> TSfrac_mean_temp;
   std::vector<double> TSfrac_sigma_temp;
@@ -424,6 +433,15 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     { "rawADCmaxU", &fRawADCmaxU, kDoubleV, 0, 1, 1 },
     { "rawADCminV", &fRawADCminV, kDoubleV, 0, 1, 1 },
     { "rawADCmaxV", &fRawADCmaxV, kDoubleV, 0, 1, 1 },
+    { "useTSfracTrigPhaseCorr", &useTSfracTrigPhaseCorr, kInt, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Umean", &fTSfrac_vs_TrigPhase_Umean, kDoubleV, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Vmean", &fTSfrac_vs_TrigPhase_Vmean, kDoubleV, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Usigma", &fTSfrac_vs_TrigPhase_Usigma, kDoubleV, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Vsigma", &fTSfrac_vs_TrigPhase_Vsigma, kDoubleV, 0, 1, 1 },
+    { "threshU_wTScorr_vs_trigphase", &fThreshU_wTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "threshV_wTScorr_vs_trigphase", &fThreshV_wTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "threshU_uTScorr_vs_trigphase", &fThreshU_uTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "threshV_uTScorr_vs_trigphase", &fThreshV_uTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
     {0}
   };
   status = LoadDB( file, date, request, fPrefix, 1 ); //The "1" after fPrefix means search up the tree
@@ -665,7 +683,6 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     } 
   }
 
-
   // //resize all the "decoded strip" arrays to their maximum possible values for this module:
   UInt_t nstripsmax = fNstripsU + fNstripsV;
   
@@ -719,6 +736,9 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fStrip_ENABLE_CM.resize( nstripsmax );
   fStrip_CM_GOOD.resize( nstripsmax );
   fStrip_BUILD_ALL_SAMPLES.resize( nstripsmax );
+
+  fStripTScorr_w.resize( nstripsmax );
+  fStripTScorr_u.resize( nstripsmax );
 
   fStripUonTrack.resize( nstripsmax );
   fStripVonTrack.resize( nstripsmax );
@@ -1046,6 +1066,51 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
       return kInitError;
     }
   }
+
+  // If applicable, check size of TSfrac vs trig phase parameters:
+  fUseTSfracTrigPhaseCorr = useTSfracTrigPhaseCorr >= 0 ? true : false;
+  fTSfracTrigPhaseCorrFlag = useTSfracTrigPhaseCorr;
+
+  if( fUseTSfracTrigPhaseCorr ){ //don't bother with these checks if we aren't going to either calculate or use these quantities! 
+  
+    UInt_t SizeExpect = 6 * fN_MPD_TIME_SAMP;
+    
+    //For now, because we're lazy, we'll require both the parameters and the thresholds to be defined with correct sizes:
+    // 36 for mean and sigma parameters, 6 for correlation coefficient thresholds
+    
+    fTSfracTrigPhaseIsInitialized = ( fTSfrac_vs_TrigPhase_Umean.size() == SizeExpect && 
+				      fTSfrac_vs_TrigPhase_Vmean.size() == SizeExpect && 
+				      fTSfrac_vs_TrigPhase_Usigma.size() == SizeExpect &&
+				      fTSfrac_vs_TrigPhase_Vsigma.size() == SizeExpect );
+    
+    
+    if( !fTSfracTrigPhaseIsInitialized ){
+      fUseTSfracTrigPhaseCorr = false;
+      fTSfracTrigPhaseCorrFlag = -1;
+    } else { // check threshold definitions; if ANY have incorrect size, revert all to default:
+      if( !(fThreshU_wTScorr_vs_TrigPhase.size() == 6 &&
+	    fThreshV_wTScorr_vs_TrigPhase.size() == 6 &&
+	    fThreshU_uTScorr_vs_TrigPhase.size() == 6 &&
+	    fThreshV_uTScorr_vs_TrigPhase.size() == 6 ) ){
+	
+	Warning(Here("ReadDatabase"), "Incorrect size (correct = 6) for TS fraction vs trig phase corr. coeff thresholds, defaulting all to -1 (equivalent to no cut!). Fix database");
+	
+	fThreshU_wTScorr_vs_TrigPhase.resize(6);
+	fThreshV_wTScorr_vs_TrigPhase.resize(6);
+	fThreshU_uTScorr_vs_TrigPhase.resize(6);
+	fThreshV_uTScorr_vs_TrigPhase.resize(6);
+	
+	for( int iphase=0; iphase<6; iphase++ ){
+	  fThreshU_wTScorr_vs_TrigPhase[iphase] = -1.0;
+	  fThreshV_wTScorr_vs_TrigPhase[iphase] = -1.0;
+	  fThreshU_uTScorr_vs_TrigPhase[iphase] = -1.0;
+	  fThreshV_uTScorr_vs_TrigPhase[iphase] = -1.0;
+	}
+      }
+    }
+  } 
+
+    
   
   // for( UInt_t i = 0; i < rawped.size(); i++ ){
   //   if( (i % 2) == 1 ) continue;
@@ -1227,6 +1292,8 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "strip.ENABLE_CM", "online common-mode enabled?", kUInt, 0, &(fStrip_ENABLE_CM[0]), &fNstrips_hit },
     { "strip.CM_GOOD", "common-mode out of range? (online failed)", kUInt, 0, &(fStrip_CM_GOOD[0]), &fNstrips_hit },
     { "strip.BUILD_ALL_SAMPLES", "online or offline zero suppression", kUInt, 0, &(fStrip_BUILD_ALL_SAMPLES[0]), &fNstrips_hit },
+    { "strip.TScorr_w", "weighted corr. coeff. with expected time dependence (trigger-phase dependent)", kDouble, 0, &(fStripTScorr_w[0]), &fNstrips_hit },
+    { "strip.TScorr_u", "unweighted corr. coeff. with expected time dependence (trigger-phase dependent)", kDouble, 0, &(fStripTScorr_u[0]), &fNstrips_hit },
     { "strip.ontrackU", "U strip on track", kUInt, 0, &(fStripUonTrack[0]), &fNstrips_hit },
     { "strip.ontrackV", "V strip on track", kUInt, 0, &(fStripVonTrack[0]), &fNstrips_hit },
     { nullptr },
@@ -1270,6 +1337,8 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "clust.clustu_pos",   "u clusters position",   "fUclusters.hitpos_mean" },
     { "clust.clustu_adc",   "u clusters adc sum",   "fUclusters.clusterADCsum" },
     { "clust.clustu_time",   "u clusters time",   "fUclusters.t_mean" },
+    { "clust.uTScorr_U", "u clusters unweighted corr. coeff.", "fUclusters.uTScorr" },
+    { "clust.wTScorr_U", "u clusters unweighted corr. coeff.", "fUclusters.wTScorr" },
     { "clust.nclustv",   "Number of clusters in v",   "fNclustV_pos" },
     { "clust.nclustv_neg",   "Number of clusters in v that are negative",   "fNclustV_neg" },
     { "clust.nclustv_tot", "Total number of V clusters found in total active area", "fNclustV_total" },
@@ -1277,6 +1346,8 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "clust.clustv_pos",   "v clusters position",   "fVclusters.hitpos_mean" },
     { "clust.clustv_adc",   "v clusters adc sum",   "fVclusters.clusterADCsum" },
     { "clust.clustv_time",   "v clusters time",   "fVclusters.t_mean" },
+    { "clust.uTScorr_V", "v clusters unweighted corr. coeff.", "fVclusters.uTScorr" },
+    { "clust.wTScorr_V", "v clusters unweighted corr. coeff.", "fVclusters.wTScorr" },
     { "clust.isnegativeU",   "Is cluster negative?",   "fUclusters.isneg" },
     { "clust.isnegativeV",   "Is cluster negative?",   "fVclusters.isneg" },
     { "clust.isnegontrackU",   "Is cluster negative and on a track?",   "fUclusters.isnegontrack" },
@@ -1415,6 +1486,12 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
 
 Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
   //std::cout << "[SBSGEMModule::Decode " << fName << "]" << std::endl;
+
+  ULong64_t evtime = evdata.GetEvTime();
+
+  UInt_t trigphase = evtime % 6; //In the future: don't hard code this! For now, evtime modulo 6 might work, but some future GEM electronics might have a different clock frequency relative to the TS! 
+
+  fTrigPhase = trigphase;
   
   //initialize generic "strip" counter to zero:
   fNstrips_hit = 0;
@@ -2002,7 +2079,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	      //std::cout << "Attempting common-mode correction for full-readout event sample " << isamp << "...";
 	      
-	      double Correction = GetCommonModeCorrection( isamp, *it, ngoodhits, fN_APV25_CHAN, true );
+	      double Correction = GetCommonModeCorrection( isamp, *it, ngoodhits, fN_APV25_CHAN, true, 0 );
 
 	      double bias = fCM_online[isamp] - Correction - commonMode[isamp];
 
@@ -2076,7 +2153,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	  //std::cout << "Attempting common-mode correction for online zero-suppressed event sample " << isamp << "...";
 	  
-	  CommonModeCorrection[isamp] = GetCommonModeCorrection( isamp, *it, ngood, nhitstemp );
+	  CommonModeCorrection[isamp] = GetCommonModeCorrection( isamp, *it, ngood, nhitstemp, false, 1 );
 
 	  if( CommonModeCorrection[isamp] != 0.0 ){ //if we are applying a correction, correct it for bias:
 	    UInt_t iAPV = it->pos;
@@ -2087,11 +2164,11 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    
 	    if( fNeventsOnlineBias_by_APV[apvcounter] >= std::min( UInt_t(100), std::max(UInt_t(10), fN_MPD_TIME_SAMP * fNeventsCommonModeLookBack) ) ){
 	      CMbias = fCommonModeOnlineBiasRollingAverage_by_APV[apvcounter];
-        CommonModeCorrection[isamp] += 2.0*CMbias*(1.0-double(ngood)/double(fN_APV25_CHAN));  // Only apply when rolling average is filled
-      } else {
-        CommonModeCorrection[isamp] = 0.0;
-      }
-
+	      CommonModeCorrection[isamp] += 2.0*CMbias*(1.0-double(ngood)/double(fN_APV25_CHAN));  // Only apply when rolling average is filled
+	    } else {
+	      CommonModeCorrection[isamp] = 0.0;
+	    }
+	    
 	    //bias is DEFINED as Online common-mode MINUS correction MINUS "true" common-mode:
 	    //"correction" is DEFINED as Online common-mode MINUS "corrected common-mode" and is to be ADDED to the ADC values:
 	    // bias = online CM - (online CM - corrected CM) - true CM = corrected CM - true CM
@@ -2634,6 +2711,39 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	  //std::cout << "starting pedestal histograms..." << std::endl;
 
+
+	  fStripTScorr_w[fNstrips_hit] = CalcStripTScorr_vs_TrigPhase( fNstrips_hit, trigphase, true ); //weighted correlation with expected pulse shape
+	  fStripTScorr_u[fNstrips_hit] = CalcStripTScorr_vs_TrigPhase( fNstrips_hit, trigphase, false ); //unweighted correlation with expected pulse shape	  
+
+	  // if( fUseTSfracTrigPhaseCorr && fTSfracTrigPhaseIsInitialized ){
+	  //   double thresh_wTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_wTScorr_vs_TrigPhase[trigphase] : fThreshV_wTScorr_vs_TrigPhase[trigphase];
+	  //   double thresh_uTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_uTScorr_vs_TrigPhase[trigphase] : fThreshV_uTScorr_vs_TrigPhase[trigphase];
+
+	  //   bool good_uTScorr = fStripTScorr_u[fNstrips_hit] >= thresh_uTScorr;
+	  //   bool good_wTScorr = fStripTScorr_w[fNstrips_hit] >= thresh_wTScorr;
+
+	  //   bool good_TScorr = true;
+	    
+	  //   switch( fTSfracTrigPhaseCorrFlag ){
+	  //   case 0:
+	  //     good_TScorr = good_uTScorr;
+	  //     break;
+	  //   case 1:
+	  //     good_TScorr = good_wTScorr;
+	  //     break;
+	  //   case 2:
+	  //     good_TScorr = (good_uTScorr || good_wTScorr);
+	  //     break;
+	  //   case 3:
+	  //   default:
+	  //     good_TScorr = (good_uTScorr && good_wTScorr);
+	  //     break;
+	  //   }
+
+	  //   if( !good_TScorr ) fKeepStrip[fNstrips_hit] = false;
+	    
+	  // }
+	    
 	  if( fKeepStrip[fNstrips_hit] ){
 	    fNstrips_keep++;
 	    fNstrips_keepU += isU;
@@ -2645,6 +2755,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    }
 	    
 	  }
+
+	  
 	  
 	  
 	  fNstrips_hit++;
@@ -3586,9 +3698,17 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
   nclust_pos = 0;
   nclust_neg = 0;
   nclust_tot = 0;
- 
+
+  double thresh_wTScorr = -1.0;
+  double thresh_uTScorr = -1.0;
+  if( fUseTSfracTrigPhaseCorr ){
+    thresh_wTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_wTScorr_vs_TrigPhase[fTrigPhase] : fThreshV_wTScorr_vs_TrigPhase[fTrigPhase];
+    thresh_uTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_uTScorr_vs_TrigPhase[fTrigPhase] : fThreshV_uTScorr_vs_TrigPhase[fTrigPhase];
+  }
   
   clusters.clear();
+
+  //Temporary local variables for clustering:
   
   std::set<UShort_t> striplist;  //sorted list of strips for 1D clustering
   std::map<UShort_t, UInt_t> hitindex; //key = strip ID, mapped value = index in decoded hit array, needed to access the other information efficiently:
@@ -3599,6 +3719,8 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
   std::map<UShort_t, Double_t> Tmean_strip_deconv; //strip deconvoluted mean time
   std::map<UShort_t, Double_t> Tfit_strip; //strip "fit" time
   std::map<UShort_t, Double_t> Tsigma_strip; //strip rms time with first and/or last samples removed (if applicable)
+  std::map<UShort_t, Double_t> uTScorr; //unweighted correlation coefficient of this strip's time samples with expected pulse shape
+  std::map<UShort_t, Double_t> wTScorr; //weighted correlation coefficient of this strip's time samples with expected pulse shape
   
   std::set<UShort_t> striplist_neg;  //same as above but for negative strips
   std::map<UShort_t, UInt_t> hitindex_neg;
@@ -3643,6 +3765,9 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
 	Tfit_strip[fStrip[ihit]] = fStripTfit[ihit];
 	Tsigma_strip[fStrip[ihit]] = fTsigma[ihit];
 
+	uTScorr[fStrip[ihit]] = fStripTScorr_u[ihit];
+	wTScorr[fStrip[ihit]] = fStripTScorr_w[ihit];
+	
 	//fClusteringFlag =
 	// 1. Use deconvoluted max. combo
 	// 2. Use sum of the three time samples closest to maxstrip_t0
@@ -3728,6 +3853,28 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
       
       if( fUseStripTimingCuts != 0 && fabs( tstrip - t0 ) > tcut * tsigma ) goodtime = false;
 
+      bool goodTScorr = true;
+      if( fUseTSfracTrigPhaseCorr ){
+	//behavior according to the flag:
+	// 0 = apply threshold on unweighted corr. coeff. only
+	// 1 = apply threshold on weighted corr. coeff. only
+	// 2 = OR of both thresholds
+	// >2 = AND of both thresholds
+
+	bool good_uTScorr = uTScorr[strip] >= thresh_uTScorr;
+	bool good_wTScorr = wTScorr[strip] >= thresh_wTScorr;
+	
+	if( fTSfracTrigPhaseCorrFlag == 0 ){
+	  goodTScorr = good_uTScorr;
+	} else if( fTSfracTrigPhaseCorrFlag == 1 ){
+	  goodTScorr = good_wTScorr; 
+	} else if( fTSfracTrigPhaseCorrFlag == 2 ){
+	  goodTScorr = (good_uTScorr || good_wTScorr);
+	} else if( fTSfracTrigPhaseCorrFlag > 2 ){
+	  goodTScorr = (good_uTScorr && good_wTScorr);
+	}
+      }
+      
       // if( !goodtime && fClusteringFlag == 1 ){
       // 	// if a strip fails the basic timing cut but has good deconvoluted ADC value, keep it
       // 	// anyway:
@@ -3736,7 +3883,7 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
       // 	}
       // }
 
-      if( goodtime && fKeepStrip[hitindex[strip]] ){
+      if( goodTScorr && goodtime && fKeepStrip[hitindex[strip]] ){
 	islocalmax[strip] = true;
 	localmaxima.insert( strip );
       }
@@ -4060,7 +4207,7 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
       if( isamp + 1 == fN_MPD_TIME_SAMP && clusttemp.DeconvADCsamples[isamp] > maxADCcombo_deconv ){
 	maxADCcombo_deconv = clusttemp.DeconvADCsamples[isamp];
 	clusttemp.icombomaxDeconv = fN_MPD_TIME_SAMP;
-      }	
+      }
     }
     
     clusttemp.hitpos_mean = sumx / sumwx;
@@ -4075,6 +4222,8 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
 
     FitClusterTime( clusttemp );
 
+    CalcClustTScorr_vs_TrigPhase( clusttemp, axis ); //This routine will calculate the weighted and unweighted correlation coefficients for cluster-summed ADC samples
+    
     //clusttemp.t_mean_fit -= fStripMaxTcut_central_fit[axis];
     
     //initialize "keep" flag for all 1D clusters to false (ADR on March 26, 2026):
@@ -4456,12 +4605,6 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
 }
 
 void SBSGEMModule::fill_2D_hit_arrays(){
-
-  //This will also need to be modified to allow for the possibility of multiple constraint points.
-  // 1) Don't zero out the size of everything since there may already be some hits in here from a previous call
-  // 2) We'll need to implement some checks to ensure that we don't double-count any potential 2D hit candidates
-  // 3) We'll ALSO need to find a way to implement the constraints here! Oh wait, no we don't
-  // 4) But we DO need to make this method slightly more efficient: on a FIRST call to this routine
   
   //Clear out the 2D hit array to get rid of any leftover junk from prior events:
   fHits.clear();
@@ -5502,6 +5645,92 @@ Double_t SBSGEMModule::CorrCoeff( int nsamples, const std::vector<double> &Usamp
   
 }
 
+// Utility method to calculate weighted correlation coefficient between two arbitrary vectors:
+// (size of V1, V2, and W must match or exceed "nsamples" argument to avoid seg. fault!)
+Double_t SBSGEMModule::CorrCoeffWeighted( int nsamples, const std::vector<double> &Vec1, const std::vector<double> &Vec2, const std::vector<double> &Weights ){
+  double sumweights = 0.0;
+  double sumx = 0.0, sumy = 0.0, sumx2 = 0.0, sumy2 = 0.0, sumxy = 0.0;
+
+  if( Vec1.size() < nsamples || Vec2.size() < nsamples || Weights.size() < nsamples ){
+    return -10000.0;
+  }
+
+  for( int i=0; i<nsamples; i++ ){
+    sumweights += Weights[i];
+    sumx += Vec1[i] * Weights[i];
+    sumy += Vec2[i] * Weights[i];
+    sumx2 += pow(Vec1[i],2)*Weights[i];
+    sumy2 += pow(Vec2[i],2)*Weights[i];
+    sumxy += Vec1[i]*Vec2[i]*Weights[i];
+  }
+
+  double meanX = sumx / sumweights;
+  double meanY = sumy / sumweights;
+  double varX = sumx2 / sumweights - pow(meanX,2);
+  double varY = sumy2 / sumweights - pow(meanY,2);
+  double sigX = sqrt(varX);
+  double sigY = sqrt(varY);
+
+  return ( sumxy - sumweights * meanX * meanY )/(sumweights * sigX * sigY);
+  
+}
+
+// Calculate the (weighted or unweighted) correlation coefficient of this strip's time samples with the
+// expected shape for "good" (in-time) signals. Let's refer to the "StripTSchi2" method as a template for how to write this one efficiently
+Double_t SBSGEMModule::CalcStripTScorr_vs_TrigPhase( int hitindex, UInt_t trigphase, bool weighted ){
+  if( !(fUseTSfracTrigPhaseCorr && fTSfracTrigPhaseIsInitialized) ) return -1000.0;
+  
+  if( hitindex < 0 || hitindex > fNstrips_hit ) return -1000.0; //NOTE: we use ">" rather than ">=" in this check because this method gets called BEFORE incrementing fNstrips_hit in the Decode method!
+
+  //Declare references to the respective parameter vectors depending on axis: 
+  std::vector<double> &TSfrac_vs_trigphase_mean = fAxis[hitindex] == SBSGEM::kUaxis ? fTSfrac_vs_TrigPhase_Umean : fTSfrac_vs_TrigPhase_Vmean;
+  std::vector<double> &TSfrac_vs_trigphase_sigma = fAxis[hitindex] == SBSGEM::kUaxis ? fTSfrac_vs_TrigPhase_Usigma : fTSfrac_vs_TrigPhase_Vsigma;
+
+  double ADCsum = fADCsums[hitindex];
+  
+  std::vector<double> &ADCsamples = fADCsamples[hitindex];
+
+  std::vector<double> ADCfrac(fN_MPD_TIME_SAMP), ADCfrac_expect(fN_MPD_TIME_SAMP), weights(fN_MPD_TIME_SAMP,1.0);
+
+  int nsamp = fN_MPD_TIME_SAMP; //declare and initialize this local variable to avoid some compiler warnings about signed/unsigned comparisons (hopefully)
+  
+  for( int isamp=0; isamp<nsamp; isamp++ ){
+    ADCfrac[isamp] = ADCsamples[isamp]/ADCsum;
+    ADCfrac_expect[isamp] = TSfrac_vs_trigphase_mean[trigphase+6*isamp];
+    if( weighted ){ //weight by 1/sigma^2
+      weights[isamp] = pow( TSfrac_vs_trigphase_sigma[trigphase+6*isamp], -2 );
+    }
+  }
+
+  //return value is the result of the CorrCoeffWeighted method above; if "weighted" is true, weight by sigma^(-2), otherwise all weights are set to 1
+  return CorrCoeffWeighted( nsamp, ADCfrac, ADCfrac_expect, weights );
+}
+
+void SBSGEMModule::CalcClustTScorr_vs_TrigPhase( sbsgemcluster_t &clust, SBSGEM::GEMaxis_t axis ){
+  clust.uTScorr = -1000.;
+  clust.wTScorr = -1000.;
+
+  if( !fUseTSfracTrigPhaseCorr ) return;
+    
+  int nsamp = fN_MPD_TIME_SAMP;
+  
+  std::vector<double> ADCfrac(nsamp,0.0);
+  std::vector<double> ADCfrac_expect(nsamp,0.0);
+  std::vector<double> weights_u(nsamp,1.0);
+  std::vector<double> weights(nsamp,1.0);
+  for( int isamp=0; isamp<nsamp; isamp++ ){
+    ADCfrac[isamp] = clust.ADCsamples[isamp]/clust.clusterADCsum;
+    ADCfrac_expect[isamp] = ( axis == SBSGEM::kUaxis ) ? fTSfrac_vs_TrigPhase_Umean[fTrigPhase+6*isamp] : fTSfrac_vs_TrigPhase_Vmean[fTrigPhase+6*isamp];
+    
+    double sigma = ( axis == SBSGEM::kUaxis ) ? fTSfrac_vs_TrigPhase_Usigma[fTrigPhase+6*isamp] : fTSfrac_vs_TrigPhase_Vsigma[fTrigPhase+6*isamp];
+
+    weights[isamp] = pow(sigma,-2);
+  }
+
+  clust.uTScorr = CorrCoeffWeighted( nsamp, ADCfrac, ADCfrac_expect, weights_u );
+  clust.wTScorr = CorrCoeffWeighted( nsamp, ADCfrac, ADCfrac_expect, weights );
+}
+
 TVector2 SBSGEMModule::UVtoXY( TVector2 UV ){
   double det = fPxU*fPyV - fPyU*fPxV;
 
@@ -5762,6 +5991,9 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     double mindiff = sortedADCs.back() - sortedADCs.front(); 
     
     for( int j=0; j<=sortedADCs.size()-fCommonModeMinStripsInRange; j++ ){
+
+      // So suppose size = 128, minstrips = 20; then the first iteration will take diff = ADC[19]-ADC[0]
+      // the last iteration will take diff = ADC[127]-ADC[108] --> CORRECT!
       double diff = sortedADCs[j+fCommonModeMinStripsInRange-1]-sortedADCs[j];
       
       if( diff < mindiff ){
@@ -5797,7 +6029,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       
     }
 
-    if( ngood >= fCommonModeMinStripsInRange ){
+    if( ngood >= fCommonModeMinStripsInRange ){ //if at least minstrips strips fall within +/- 3*sigma_ped, average all, otherwise, take the best 20
       cm_temp = sumADC/double(ngood);
     }
     
@@ -6029,7 +6261,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 
     if( n_keep < fCommonModeMinStripsInRange ) return cm_mean;
     
-    CM_1 /= n_keep;
+    CM_1 /= double(n_keep);
     n_keep = 0;
     
     for( int ihit=0; ihit<nhits; ihit++ ){
@@ -6049,7 +6281,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     return CM_2/n_keep;
     
     
-  } else if( flag == 4 ) { //Online Danning method for GEn
+  } else if( flag == 4 || flag == 6 ) { //Online Danning method for GEn/GEp
     int iAPV = apvinfo.pos;
     double cm_mean = ( apvinfo.axis == SBSGEM::kUaxis ) ? fCommonModeMeanU[iAPV] : fCommonModeMeanV[iAPV];
     double cm_rms = ( apvinfo.axis == SBSGEM::kUaxis ) ? fCommonModeRMSU[iAPV] : fCommonModeRMSV[iAPV];
@@ -6063,8 +6295,8 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 
       double cm_min = cm_mean - fCommonModeRange_nsigma*cm_rms;
 
-      //NOTE: this line is only applicable to GEP running after a certain point! Comment our for early GEP analysis or previous expt's.
-      if( iter == 0 ) cm_min = 0.0;
+      //NOTE: this line is only applicable to GEP running after a certain point! Comment out for early GEP analysis or previous expt's.
+      if( iter == 0 && flag == 6 ) cm_min = 0.0;
       
       double cm_max = cm_mean + fCommonModeRange_nsigma*cm_rms;
       double sumADCinrange = 0.0;
@@ -6089,7 +6321,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 	}
       }
    
-      cm_temp = sumADCinrange / n_keep;
+      cm_temp = sumADCinrange / double(n_keep);
     }
 
     if( n_keep < fCommonModeMinStripsInRange ){
@@ -6263,7 +6495,7 @@ void SBSGEMModule::fill_ADCfrac_vs_time_sample_goodstrip( Int_t hitindex, bool i
 
 //This function calculates the chi2 of a vector of time samples with respect to the "Good Strip" averages:
 double SBSGEMModule::StripTSchi2( int hitindex ){
-  if( hitindex < 0 || hitindex > fNstrips_hit ) return -1.;
+  if( hitindex < 0 || hitindex > fNstrips_hit ) return -1.; //NOTE: we use ">" rather than ">=" in this check because this method gets called BEFORE incrementing fNstrips_hit in the Decode method!
   double chi2 = 0.0;
   double t0 = fStripMaxTcut_central[fAxis[hitindex]] - fStripTau;
 
@@ -6621,28 +6853,28 @@ double SBSGEMModule::GetCommonModeCorrection( UInt_t isamp, const mpdmap_t &apvi
   if( ngoodhits >= fCorrectCommonModeMinStrips &&
       (online_bias > fCorrectCommonMode_Nsigma * cm_rms || flag == 0 ) ){
     //Attempt to calculate a correction:
-    if( fCommonModeFlag == 0 ){
+    if( fCommonModeFlag == 0 ){ // Enhanced sorting; 
       //sorting: this method will be significantly biased if we use the same "low strip" rejection as for full-readout events
-      if( ngoodhits >= fCommonModeMinStripsInRange ){
-	      std::vector<double> sortedADCs(ngood);
-	      for( int ihit=0; ihit<ngood; ihit++ ){
-	        int iraw = isamp + fN_MPD_TIME_SAMP * goodhits[ihit];
-	        double ADCtemp = fPedSubADC_APV[iraw]; 
-	        if( !fullreadout ) ADCtemp += fCM_online[isamp]; //Add back in online common-mode if it was subtracted online
-	        sortedADCs[ihit] = ADCtemp;
-	      }
+      if( ngoodhits >= fCommonModeMinStripsInRange ){ //In this context, "ngoodhits" is the number of strips that did (or would have) passed online ZS 
+	std::vector<double> sortedADCs(ngood);
+	for( int ihit=0; ihit<ngood; ihit++ ){
+	  int iraw = isamp + fN_MPD_TIME_SAMP * goodhits[ihit];
+	  double ADCtemp = fPedSubADC_APV[iraw]; 
+	  if( !fullreadout ) ADCtemp += fCM_online[isamp]; //Add back in online common-mode if it was subtracted online
+	  sortedADCs[ihit] = ADCtemp;
+	}
 	
-	      double cm_temp = 0.0;
-	      int stripcount=0;
+	double cm_temp = 0.0;
+	int stripcount=0;
 	
-	      std::sort( sortedADCs.begin(), sortedADCs.end() );
+	std::sort( sortedADCs.begin(), sortedADCs.end() );
         // Comment out the next 4 lines belonging to the original generic sorting algorithm:
-	      //for( int k=fCommonModeNstripRejectLow; k<ngoodhits-fCommonModeNstripRejectHigh; k++ ){
-	      //  cm_temp += sortedADCs[k];
-	      //  stripcount++;
-	      //}
+	//for( int k=fCommonModeNstripRejectLow; k<ngoodhits-fCommonModeNstripRejectHigh; k++ ){
+	//  cm_temp += sortedADCs[k];
+	//  stripcount++;
+	//}
 
-// Add the "enhanced" part of the algorithm here:
+	// Add the "enhanced" part of the algorithm here:
         // Create a moving "search window" within sorted ADCs
         int firststrip = 0;
         double mindiff = sortedADCs.back() - sortedADCs.front();
@@ -6682,7 +6914,7 @@ double SBSGEMModule::GetCommonModeCorrection( UInt_t isamp, const mpdmap_t &apvi
 
 	    //CMcorrection = fCM_online[isamp] - cm_temp;
       }
-    } else if( fCommonModeFlag == 1 ){ // Flag 1 does not exist for GetCommonMode function, hear it does Danning method
+    } else if( fCommonModeFlag == 1 ){ // Flag 1 does not exist for GetCommonMode function, here it does Danning method
 
       double cm_min = cm_mean - fCommonModeDanningMethod_NsigmaCut*cm_rms;
       double cm_max = cm_mean + fCommonModeDanningMethod_NsigmaCut*cm_rms;
@@ -6690,37 +6922,37 @@ double SBSGEMModule::GetCommonModeCorrection( UInt_t isamp, const mpdmap_t &apvi
       double cm_temp = 0.0;
       for( int iter=0; iter<fCommonModeNumIterations; iter++ ){
 	  
-	      int nstripsinrange = 0;
-	      double sumADCinrange = 0.0;
+	int nstripsinrange = 0;
+	double sumADCinrange = 0.0;
 	  
-	      for( int ihit=0; ihit<ngood; ihit++ ){
-	        int iraw = isamp + fN_MPD_TIME_SAMP * goodhits[ihit];
-	        double ADCtemp = fPedSubADC_APV[iraw];
+	for( int ihit=0; ihit<ngood; ihit++ ){
+	  int iraw = isamp + fN_MPD_TIME_SAMP * goodhits[ihit];
+	  double ADCtemp = fPedSubADC_APV[iraw];
 	    
-	        if( !fullreadout ) ADCtemp += fCM_online[isamp];
+	  if( !fullreadout ) ADCtemp += fCM_online[isamp];
 	    
-	        double rmstemp = ( apvinfo.axis == SBSGEM::kUaxis ) ? fPedRMSU[fStripAPV[iraw]] : fPedRMSV[fStripAPV[iraw]];
+	  double rmstemp = ( apvinfo.axis == SBSGEM::kUaxis ) ? fPedRMSU[fStripAPV[iraw]] : fPedRMSV[fStripAPV[iraw]];
 	    
-	        double mintemp = cm_min;
-	        double maxtemp = cm_max;
+	  double mintemp = cm_min;
+	  double maxtemp = cm_max;
 	    
-	        if( iter > 0 ){
-	          maxtemp = cm_temp + fCommonModeDanningMethod_NsigmaCut * rmstemp * fRMS_ConversionFactor;
-	          mintemp = cm_temp - fCommonModeDanningMethod_NsigmaCut * rmstemp * fRMS_ConversionFactor;
-	        }
+	  if( iter > 0 ){
+	    maxtemp = cm_temp + fCommonModeDanningMethod_NsigmaCut * rmstemp * fRMS_ConversionFactor;
+	    mintemp = cm_temp - fCommonModeDanningMethod_NsigmaCut * rmstemp * fRMS_ConversionFactor;
+	  }
 	    
-	        if( ADCtemp >= mintemp && ADCtemp <= maxtemp ){
-	          nstripsinrange++;
-	          sumADCinrange += ADCtemp;
-	        }  
-	      }
+	  if( ADCtemp >= mintemp && ADCtemp <= maxtemp ){
+	    nstripsinrange++;
+	    sumADCinrange += ADCtemp;
+	  }  
+	}
 	  
-	      if( nstripsinrange >= fCommonModeMinStripsInRange ){
-	        cm_temp = sumADCinrange/double(nstripsinrange);
-	        ngoodhits = nstripsinrange;
-	      } else if( iter == 0 ){ //don't attempt correction, just return 0
-	        CMcorrection = 0.0;
-	      }
+	if( nstripsinrange >= fCommonModeMinStripsInRange ){
+	  cm_temp = sumADCinrange/double(nstripsinrange);
+	  ngoodhits = nstripsinrange;
+	} else if( iter == 0 ){ //don't attempt correction, just return 0
+	  CMcorrection = 0.0;
+	}
       }
 
       CMcorrection = fCM_online[isamp] - cm_temp;

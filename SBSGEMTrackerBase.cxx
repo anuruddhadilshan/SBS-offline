@@ -335,6 +335,16 @@ void SBSGEMTrackerBase::Clear(){ //Clear out any event-specific stuff
   fHitTSprobMaxUstrip.clear();
   fHitTSprobMaxVstrip.clear();
 
+  fHit_uTScorr_MaxUstrip.clear();
+  fHit_wTScorr_MaxUstrip.clear();
+  fHit_uTScorr_MaxVstrip.clear();
+  fHit_wTScorr_MaxVstrip.clear();
+
+  fHit_uTScorr_Uclust.clear();
+  fHit_wTScorr_Uclust.clear();
+  fHit_uTScorr_Vclust.clear();
+  fHit_wTScorr_Vclust.clear();
+  
   fHitCrate_U.clear();
   fHitMPD_U.clear();
   fHitADCID_U.clear();
@@ -2446,6 +2456,17 @@ void SBSGEMTrackerBase::fill_good_hit_arrays() { //this gets called at the end o
       fHitTSchi2MaxVstrip.push_back( fModules[module]->fStripTSchi2[hitidx_vmax] );
       fHitTSprobMaxUstrip.push_back( fModules[module]->fStripTSprob[hitidx_umax] );
       fHitTSprobMaxVstrip.push_back( fModules[module]->fStripTSprob[hitidx_vmax] );
+
+      fHit_uTScorr_MaxUstrip.push_back( fModules[module]->fStripTScorr_u[hitidx_umax] );
+      fHit_wTScorr_MaxUstrip.push_back( fModules[module]->fStripTScorr_w[hitidx_umax] );
+      fHit_uTScorr_MaxVstrip.push_back( fModules[module]->fStripTScorr_u[hitidx_vmax] );
+      fHit_wTScorr_MaxVstrip.push_back( fModules[module]->fStripTScorr_w[hitidx_vmax] );
+
+      fHit_uTScorr_Uclust.push_back( uclustinfo->uTScorr );
+      fHit_wTScorr_Uclust.push_back( uclustinfo->wTScorr );
+      fHit_uTScorr_Vclust.push_back( vclustinfo->uTScorr );
+      fHit_wTScorr_Vclust.push_back( vclustinfo->wTScorr );
+      
       
       //
       //std::cout << "made it past basic hit info, starting loop over strips..." << std::endl;

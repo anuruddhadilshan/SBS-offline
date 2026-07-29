@@ -546,7 +546,10 @@ protected:
   //New variables to hold correlation coefficients for deconvoluted samples max strip and cluster-level:
   std::vector<double> fHitCorrCoeffClustDeconv; //correlation coefficient between cluster-summed deconvoluted U and V samples
   std::vector<double> fHitCorrCoeffMaxStripDeconv; //correlation coefficient between max strip U and V deconv. ADC samples
-  //
+
+  
+  
+  
   //For pulse shape studies:
   std::vector<double> fHitADCfrac0_MaxUstrip; //time sample 0 of max U strip
   std::vector<double> fHitADCfrac1_MaxUstrip; //time sample 1 of max U strip
@@ -579,6 +582,20 @@ protected:
   std::vector<double> fHitTSprobMaxUstrip;
   std::vector<double> fHitTSprobMaxVstrip;
 
+  //Let's add the time sample fraction versus trigger phase correlation coefficients (weighted and unweighted), for
+  //max strip and cluster-level:
+  std::vector<double> fHit_uTScorr_MaxUstrip;
+  std::vector<double> fHit_wTScorr_MaxUstrip;
+  std::vector<double> fHit_uTScorr_MaxVstrip;
+  std::vector<double> fHit_wTScorr_MaxVstrip;
+
+  //Let's add the time sample fraction versus trigger phase correlation coefficients (weighted and unweighted), for
+  //max strip and cluster-level:
+  std::vector<double> fHit_uTScorr_Uclust;
+  std::vector<double> fHit_wTScorr_Uclust;
+  std::vector<double> fHit_uTScorr_Vclust;
+  std::vector<double> fHit_wTScorr_Vclust;
+  
   std::vector<double> fHitCrate_U; //Crate/ROC number of max U strip
   std::vector<double> fHitMPD_U; // MPD/fiber number of max U strip
   std::vector<double> fHitADCID_U; // ADC channel number of APV containing max U strip;
