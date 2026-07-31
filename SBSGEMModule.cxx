@@ -1453,7 +1453,6 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
   fNstrips_keep_lmaxU = 0;
   fNstrips_keep_lmaxV = 0;
   
-  
   fNclustU = 0;
   fNclustV = 0;
   fNclustU_pos = 0;
@@ -1469,6 +1468,14 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
   fN2Dhits_total = 0;
   //similar here:
   fHits.clear();
+
+  // good-ADC cleanup:
+  fNclustU_goodADC = 0;
+  fNclustV_goodADC = 0;
+  fUclusters_goodADC.clear();
+  fVclusters_goodADC.clear();
+  fN2Dhits_goodADC = 0;
+  fHits_goodADC.clear();
 
   fTrigTime = 0.0;
   
