@@ -303,6 +303,7 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<UInt_t> fTfine_by_APV; //"Fine time stamp" by APV:
   std::vector<UInt_t> fEventCount_by_APV; //MPD event counter by APV:
   std::vector<double> fTimeStamp_ns_by_APV; //Coarse time stamp - T0 + fine time stamp % 6
+  std::vector<double> fTdiff_mpdcoarse_TS_by_APV; // Coarse time difference between MPD and TS timestamps.
   
   //What should we use to hold the rolling average of common-mode means?
   
