@@ -580,6 +580,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     fTcoarse_by_APV.push_back( 0 );
     fTfine_by_APV.push_back( 0 );
     fTimeStamp_ns_by_APV.push_back( 0 );
+    fTdiff_mpdcoarse_TS_by_APV.push_back( 0 );
 
     //fCommonModeRollingFirstEvent_by_APV[mapline] = 0.0;
     fCommonModeResultContainer_by_APV[mapline].resize( fNeventsCommonModeLookBack*fN_MPD_TIME_SAMP );
@@ -1385,6 +1386,7 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "time.Tfine_by_APV", "Fine MPD timestamp by APV", "fTfine_by_APV" },
     { "time.EventCount_by_APV", "MPD event counter by APV (these should all agree in any one event)", "fEventCount_by_APV" },
     { "time.T_ns_by_APV", "Time stamp in ns relative to coarse T_ref", "fTimeStamp_ns_by_APV" },
+    { "time.Tdiff_mpdcoarse_TS", "Differece between MPD_TS - TS_timestamp/6", "fTdiff_mpdcoarse_TS_by_APV" },
     { nullptr },
   };
 
@@ -1579,8 +1581,15 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    hMPD_FineTimeStamp_vs_Fiber->Fill( fiber, fTfine_by_APV[apvcounter] * 4.0 );
 	  }
 	  
-	  Long64_t Tcoarse = Thigh << 16 | ( Tlow << 8 );
+	  //Long64_t Tcoarse = Thigh << 16 | ( Tlow << 8 );
+    // "TIMESTAMP_COARSE0" <= bits 15:0 coarse timestamp from the MPD
+    // "TIMESTAMP_COARSE1 bits 3:0" <= bits 19:16 coarse timestamp from the MPD
+    // According to the 'SSP_MPD_EventFormat_Nov2021.pdf' document, the first 8 bits of TIMESTAMP_COARSE0 (==Tlow here) give the MPD fine time stamp and the next 16 bits give the 16 least significant bits of the MPT coarse time stamp.
+    // And from Ben's description, the least 4 bits of the TIMESTAMP_COARSE1 (==Thigh here) give the 4 most significant bits of the MPD coarse time stamp. So we need to assemble the MPD coarse time stamp as follows:
+    // Right shif Tlow by 8 bits to get rid of the fine time stamp, then take the bitwise OR with Thigh (after masking to get the least 4 bits and left shifting by 16 bits) to get the correct coarse time stamp.
+    ULong64_t Tcoarse = (Thigh & 0x0000000F) << 16 | (Tlow >> 8);
 	  double Tc = double(Tcoarse);
+
 	  
 	  if( EvCnt == 0 ) fT0_by_APV[apvcounter] = Tc;
 
@@ -1591,14 +1600,21 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  // "reference" APV
 	  fTcoarse_by_APV[apvcounter] = Tc - fT0_by_APV[apvcounter] - fTref_coarse;
 
+    fTdiff_mpdcoarse_TS_by_APV[apvcounter] = Tcoarse - ((evtime/6)&0xFFFFFULL);
+
 	  //We probably don't want to hard-code 24 ns and 4 ns here for the units of
 	  //Tcoarse and Tfine, but this should be fine for initial checkout of decoding:
 	  fTimeStamp_ns_by_APV[apvcounter] = 24.0 * fTcoarse_by_APV[apvcounter] + 4.0 * (fTfine_by_APV[apvcounter] % 6);
 
-	  // std::cout << "fiber, apvcounter, EvCnt, Tcoarse, Tfine, time stamp ns = " << fiber << ", " <<  apvcounter << ", "
-	  // 	    << fEventCount_by_APV[apvcounter] << ", " 
-	  // 	    << Tcoarse << ", " << fTfine_by_APV[apvcounter] << ", "
-	  // 	    << fTimeStamp_ns_by_APV[apvcounter] << std::endl;
+	  //std::cout << "fiber, apvcounter, EvCnt, Tcoarse, TStime, TtrigPhase, Tfine, time stamp ns = " << fiber << ", " <<  apvcounter << ", "
+    //          << fEventCount_by_APV[apvcounter] << ", " 
+    //          << Tcoarse << ", " << ((evtime/6)&0xFFFFF) << ", " << trigphase << ", " << ", " << fTfine_by_APV[apvcounter] << ", "
+    //          << fTimeStamp_ns_by_APV[apvcounter] << std::endl;
+    //UInt_t dT = Tcoarse - ((evtime/6)&0xFFFFFULL);
+
+    // if ( dT == 162 ) std::cout << "Coarse MPD Ts - TS Ts: " << dT << std::endl;
+    // else if ( dT == 163  );
+    // else std::cout << "ATTN! Coarse MPD Ts - TS Ts: " << dT << std::endl;
 							   
 	  break;
 	}	
