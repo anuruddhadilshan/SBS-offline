@@ -14,6 +14,18 @@
 #include <algorithm>
 #include <iomanip>
 
+//For ML inference: Bhasitha
+#include "SBSGEMMLHitFinder.h"
+#include "SBSGEMMLPreprocessor.h"
+#include "SBSGEMMLPostprocessor.h"
+#include <memory>
+#include <string>
+#include <utility>
+#include <fstream> //temp
+#include <limits>
+
+
+
 using namespace std;
 //using namespace SBSGEMModule;
 
@@ -235,6 +247,18 @@ SBSGEMModule::SBSGEMModule( const char *name, const char *description,
 
   fTrigPhase = 0; // to avoid compiler warning about use before initialization
   
+  // ============================================================
+  // ML hit finder defaults - Bhasitha
+  // ============================================================
+
+  fUseMLHitFinder = kFALSE;
+  fMLHitFinderInitialized = kFALSE;
+
+  fMLModelPath =
+    "/work/halla/sbs/bhasitha/"
+    "Tracking_ML/Deployment/models/"
+    "gem_hitfinder.onnx";
+
   return;
 }
 
@@ -1135,6 +1159,195 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   //     std::cout << "[SBSGEMModule::ReadDatabase]  WARNING: " << " strip " << idx  << " listed but not enough strips in cratemap" << std::endl;
   //   }
   // }
+
+
+
+
+
+
+
+
+
+
+
+  // ============================================================
+  // ML hit finder initialization - Bhasitha
+  //
+  // Initial deployment test:
+  // enable only sbs.gemFT.m0
+  // ============================================================
+
+  fUseMLHitFinder = kFALSE;
+  fMLHitFinderInitialized = kFALSE;
+
+
+  if( GetParent() != nullptr ){
+
+    const std::string parent_name =
+      GetParent()->GetName();
+
+    const std::string module_name =
+      GetName();
+
+
+    if(
+        parent_name == "gemFT" &&
+        module_name == "m0"
+      ){
+
+      fUseMLHitFinder = kTRUE;
+    }
+  }
+
+
+  // ============================================================
+  // Initialize ML model only for selected module
+  // ============================================================
+
+  if( fUseMLHitFinder ){
+
+    std::cout
+      << "\n============================================================\n"
+      << "[SBSGEMModule::ReadDatabase] Initializing ML hit finder\n"
+      << "  parent = " << GetParent()->GetName() << "\n"
+      << "  module = " << GetName() << "\n"
+      << "  model  = " << fMLModelPath << "\n"
+      << "============================================================"
+      << std::endl;
+
+
+    // Create persistent ML hit finder object
+    fMLHitFinder =
+      std::make_unique<SBSGEMMLHitFinder>();
+
+
+    // Load ONNX model
+    fMLHitFinderInitialized =
+      fMLHitFinder->Initialize(
+        fMLModelPath
+      );
+
+
+    if( !fMLHitFinderInitialized ){
+
+      std::cerr
+        << "[SBSGEMModule::ReadDatabase] ERROR: "
+        << "failed to initialize ML hit finder for "
+        << GetParent()->GetName()
+        << "."
+        << GetName()
+        << std::endl;
+
+      fclose(file);
+
+      return kInitError;
+    }
+
+
+    std::cout
+      << "[SBSGEMModule::ReadDatabase] "
+      << "ML model initialized successfully."
+      << std::endl;
+
+
+    // ============================================================
+    // Temporary ONNX smoke test
+    //
+    // IMPORTANT:
+    // The model has already been initialized above.
+    //
+    // This test uses dummy zero tensors only to verify:
+    //
+    // SBSGEMModule
+    //      -> SBSGEMMLHitFinder
+    //      -> ONNX Runtime
+    //      -> gem_hitfinder.onnx
+    //      -> logits
+    //
+    // ============================================================
+
+    const std::size_t Htest = 16;
+    const std::size_t Wtest = 16;
+
+
+    std::vector<float> test_x3d(
+      2 * 6 * Htest * Wtest,
+      0.0f
+    );
+
+
+    std::vector<float> test_extra(
+      14 * Htest * Wtest,
+      0.0f
+    );
+
+
+    std::vector<float> test_logits;
+
+
+    const bool test_ok =
+      fMLHitFinder->Run(
+        test_x3d,
+        test_extra,
+        Htest,
+        Wtest,
+        test_logits
+      );
+
+
+    if( !test_ok ){
+
+      std::cerr
+        << "[SBSGEMModule::ReadDatabase] ERROR: "
+        << "ONNX smoke-test inference failed."
+        << std::endl;
+
+      fclose(file);
+
+      return kInitError;
+    }
+
+
+    if( test_logits.size() != Htest * Wtest ){
+
+      std::cerr
+        << "[SBSGEMModule::ReadDatabase] ERROR: "
+        << "unexpected smoke-test output size: "
+        << test_logits.size()
+        << " expected "
+        << Htest * Wtest
+        << std::endl;
+
+      fclose(file);
+
+      return kInitError;
+    }
+
+
+    std::cout
+      << "[SBSGEMModule::ReadDatabase] "
+      << "ONNX smoke-test inference SUCCESS"
+      << std::endl;
+
+    std::cout
+      << "  H,W         = "
+      << Htest
+      << ","
+      << Wtest
+      << std::endl;
+
+    std::cout
+      << "  logits.size = "
+      << test_logits.size()
+      << std::endl;
+
+    std::cout
+      << "============================================================\n"
+      << std::endl;
+
+  } // end if( fUseMLHitFinder )
+
+
 
   fclose(file);
   
@@ -2997,7 +3210,1657 @@ void SBSGEMModule::add_constraint( TVector2 constraint_center, TVector2 constrai
   fycmax.push_back( constraint_center.Y() + constraint_width.Y() );
 }
 
+
+
+
+
+
+// ============================================================
+// SBSGEMModule::CollectMLROIStrips, ML preprocessing - Bhasitha
+// ============================================================
+
+bool SBSGEMModule::CollectMLROIStrips(
+    std::vector<SBSGEMMLStrip>& u_strips,
+    std::vector<SBSGEMMLStrip>& v_strips
+){
+  // ============================================================
+  // Collect regular decoded U/V strips that are relevant to
+  // at least one SBS X/Y ROI.
+  //
+  // IMPORTANT:
+  // This function does NOT:
+  //   - normalize ADC values
+  //   - insert spacers
+  //   - construct x3d
+  //   - construct extra features
+  //
+  // Those operations belong in SBSGEMMLPreprocessor.
+  // ============================================================
+
+  u_strips.clear();
+  v_strips.clear();
+
+
+  // Must already have decoded strip information.
+  if( !fIsDecoded ){
+    return false;
+  }
+
+
+  // ============================================================
+  // Check that ROI information exists and is consistent.
+  // ============================================================
+
+  const bool constraints_ok =
+    !fxcmin.empty() &&
+    fxcmin.size() == fxcmax.size() &&
+    fxcmin.size() == fycmin.size() &&
+    fxcmin.size() == fycmax.size();
+
+
+  if( !constraints_ok ){
+    return false;
+  }
+
+
+  // ============================================================
+  // Project every X/Y ROI rectangle into its corresponding
+  // U interval and V interval.
+  //
+  // We keep the intervals separately instead of constructing
+  // one huge min/max envelope around all ROIs.
+  // ============================================================
+
+  std::vector<std::pair<double,double>> u_intervals;
+  std::vector<std::pair<double,double>> v_intervals;
+
+
+  u_intervals.reserve( fxcmin.size() );
+  v_intervals.reserve( fxcmin.size() );
+
+
+  for( std::size_t ic = 0; ic < fxcmin.size(); ic++ ){
+
+    // Four corners of this X/Y ROI.
+    TVector2 corners[4] = {
+
+      TVector2(
+        fxcmin[ic],
+        fycmin[ic]
+      ),
+
+      TVector2(
+        fxcmin[ic],
+        fycmax[ic]
+      ),
+
+      TVector2(
+        fxcmax[ic],
+        fycmin[ic]
+      ),
+
+      TVector2(
+        fxcmax[ic],
+        fycmax[ic]
+      )
+    };
+
+
+    double umin =  1.0e30;
+    double umax = -1.0e30;
+
+    double vmin =  1.0e30;
+    double vmax = -1.0e30;
+
+
+    // Convert all four X/Y corners to U/V.
+    for( int k = 0; k < 4; k++ ){
+
+      const TVector2 uv =
+        XYtoUV( corners[k] );
+
+
+      umin = std::min(
+        umin,
+        uv.X()
+      );
+
+      umax = std::max(
+        umax,
+        uv.X()
+      );
+
+
+      vmin = std::min(
+        vmin,
+        uv.Y()
+      );
+
+      vmax = std::max(
+        vmax,
+        uv.Y()
+      );
+    }
+
+
+    // Save this individual ROI's projected interval.
+    u_intervals.emplace_back(
+      umin,
+      umax
+    );
+
+    v_intervals.emplace_back(
+      vmin,
+      vmax
+    );
+  }
+
+
+  // ============================================================
+  // Helper: determine whether a strip-center coordinate falls
+  // inside at least one projected ROI interval.
+  // ============================================================
+
+  auto inside_any =
+    [](
+      double position,
+      const std::vector<std::pair<double,double>>& intervals
+    )
+    {
+      for( const auto& interval : intervals ){
+
+        if(
+          position >= interval.first &&
+          position <= interval.second
+        ){
+          return true;
+        }
+      }
+
+      return false;
+    };
+
+
+  // ============================================================
+  // Loop over all regular decoded strips.
+  //
+  // We use:
+  //
+  //   fStrip
+  //   fStripIsU
+  //   fStripIsV
+  //   fADCsamples
+  //
+  // These are the regular decoded strip quantities that
+  // correspond to the waveform input used by the ML inference
+  // preparation.
+  // ============================================================
+
+  for( int ihit = 0; ihit < fNstrips_hit; ihit++ ){
+
+    // Defensive vector-bound checks.
+    if(
+      ihit >= static_cast<int>( fStrip.size() ) ||
+      ihit >= static_cast<int>( fStripIsU.size() ) ||
+      ihit >= static_cast<int>( fStripIsV.size() ) ||
+      ihit >= static_cast<int>( fADCsamples.size() )
+    ){
+      continue;
+    }
+
+
+    // ML model expects exactly six ADC samples.
+    if( fADCsamples[ihit].size() < 6 ){
+      continue;
+    }
+
+
+    const bool isU =
+      fStripIsU[ihit] != 0;
+
+    const bool isV =
+      fStripIsV[ihit] != 0;
+
+
+    // Should be exactly one axis.
+    //
+    // isU == isV catches:
+    //   U=0,V=0
+    //   U=1,V=1
+    if( isU == isV ){
+      continue;
+    }
+
+
+    const int strip =
+      static_cast<int>(
+        fStrip[ihit]
+      );
+
+
+    bool inside_roi = false;
+
+
+    // ==========================================================
+    // Calculate physical center position of the strip using
+    // the same convention as SBS GEM clustering.
+    // ==========================================================
+
+    if( isU ){
+
+      const double u =
+        (
+          static_cast<double>(strip)
+          + 0.5
+          - 0.5 * static_cast<double>(fNstripsU)
+        )
+        * fUStripPitch
+        + fUStripOffset;
+
+
+      inside_roi =
+        inside_any(
+          u,
+          u_intervals
+        );
+
+    } else {
+
+      const double v =
+        (
+          static_cast<double>(strip)
+          + 0.5
+          - 0.5 * static_cast<double>(fNstripsV)
+        )
+        * fVStripPitch
+        + fVStripOffset;
+
+
+      inside_roi =
+        inside_any(
+          v,
+          v_intervals
+        );
+    }
+
+
+    // Ignore decoded strips that don't intersect any ROI.
+    if( !inside_roi ){
+      continue;
+    }
+
+
+    // ==========================================================
+    // Copy physical strip ID + six ORIGINAL processed ADC
+    // samples into the simple ML strip structure.
+    //
+    // DO NOT normalize here.
+    // SBSGEMMLPreprocessor will divide by 3539 and clip.
+    // ==========================================================
+
+    SBSGEMMLStrip mlstrip;
+
+    mlstrip.strip_id = strip;
+
+
+    for( int t = 0; t < 6; t++ ){
+
+      mlstrip.adc[t] =
+        static_cast<float>(
+          fADCsamples[ihit][t]
+        );
+    }
+
+
+    // ==========================================================
+    // Keep U and V lists separate.
+    // ==========================================================
+
+    if( isU ){
+
+      u_strips.push_back(
+        mlstrip
+      );
+
+    } else {
+
+      v_strips.push_back(
+        mlstrip
+      );
+    }
+  }
+
+
+  // Python image builder cannot make an image unless
+  // both axes have at least one strip.
+  return
+    !u_strips.empty() &&
+    !v_strips.empty();
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ============================================================
+// SBSGEMModule::BuildMLHitCandidates
+//
+// Convert ML blob U/V strip IDs into physical U/V coordinates,
+// transform them to module-local X/Y, and enforce the same
+// active-area and exact X/Y ROI geometry checks used by the
+// conventional SBS 2D-hit reconstruction.
+//
+// IMPORTANT:
+// This function does NOT modify fHits.
+// ============================================================
+
+bool SBSGEMModule::BuildMLHitCandidates(
+    const SBSGEMMLPostprocessResult& post,
+    std::vector<SBSGEMMLHitCandidate>& candidates
+){
+  candidates.clear();
+
+
+  // ============================================================
+  // Validate event-local ROI vectors.
+  // ============================================================
+
+  const bool constraints_ok =
+    !fxcmin.empty() &&
+    fxcmin.size() == fxcmax.size() &&
+    fxcmin.size() == fycmin.size() &&
+    fxcmin.size() == fycmax.size();
+
+
+  if( !constraints_ok ){
+    return false;
+  }
+
+
+  candidates.reserve(
+    post.blobs.size()
+  );
+
+
+  // ============================================================
+  // Loop over ML-predicted blobs.
+  // ============================================================
+
+  for( const auto& blob : post.blobs ){
+
+    const int ustrip =
+      blob.x_strip;
+
+    const int vstrip =
+      blob.y_strip;
+
+
+    // ----------------------------------------------------------
+    // Defensive physical-strip validation.
+    //
+    // Postprocessor should already guarantee real strip IDs,
+    // but keep this check here because this is the boundary
+    // between ML output and SBS detector geometry.
+    // ----------------------------------------------------------
+
+    if(
+      ustrip < 0 ||
+      vstrip < 0 ||
+      ustrip >= static_cast<int>(fNstripsU) ||
+      vstrip >= static_cast<int>(fNstripsV)
+    ){
+      continue;
+    }
+
+
+    SBSGEMMLHitCandidate candidate;
+
+
+    candidate.blob_id =
+      blob.blob_id;
+
+    candidate.u_strip =
+      ustrip;
+
+    candidate.v_strip =
+      vstrip;
+
+    candidate.area =
+      blob.area;
+
+    candidate.real_area =
+      blob.real_area;
+
+
+    // ==========================================================
+    // Convert physical strip IDs to strip-center coordinates.
+    //
+    // Same SBS convention:
+    //
+    // position =
+    //   (strip + 0.5 - 0.5*Nstrips)*pitch + offset
+    // ==========================================================
+
+    candidate.u =
+      (
+        static_cast<double>(ustrip)
+        + 0.5
+        - 0.5 * static_cast<double>(fNstripsU)
+      )
+      * fUStripPitch
+      + fUStripOffset;
+
+
+    candidate.v =
+      (
+        static_cast<double>(vstrip)
+        + 0.5
+        - 0.5 * static_cast<double>(fNstripsV)
+      )
+      * fVStripPitch
+      + fVStripOffset;
+
+
+    // ==========================================================
+    // U/V -> module-local X/Y
+    //
+    // Use SBS's existing geometry implementation.
+    // ==========================================================
+
+    const TVector2 uv(
+      candidate.u,
+      candidate.v
+    );
+
+
+    const TVector2 xy =
+      UVtoXY(uv);
+
+
+    candidate.x =
+      xy.X();
+
+    candidate.y =
+      xy.Y();
+
+
+    // ==========================================================
+    // Check module active area.
+    //
+    // Conventional fill_2D_hit_arrays() performs this before
+    // applying the track-search constraints.
+    // ==========================================================
+
+    candidate.inside_active_area =
+      IsInActiveArea(
+        candidate.x,
+        candidate.y
+      );
+
+
+    // ==========================================================
+    // Exact X/Y ROI check.
+    //
+    // A candidate passes if it lies inside ANY live constraint
+    // rectangle.
+    // ==========================================================
+
+    candidate.inside_roi = false;
+    candidate.roi_index = -1;
+
+
+    if( candidate.inside_active_area ){
+
+      for(
+        std::size_t ic = 0;
+        ic < fxcmin.size();
+        ic++
+      ){
+
+        if(
+          fxcmin[ic] <= candidate.x &&
+          candidate.x <= fxcmax[ic] &&
+          fycmin[ic] <= candidate.y &&
+          candidate.y <= fycmax[ic]
+        ){
+
+          candidate.inside_roi = true;
+
+          candidate.roi_index =
+            static_cast<int>(ic);
+
+          break;
+        }
+      }
+    }
+
+
+    // Final acceptance for this stage.
+    candidate.accepted =
+      candidate.inside_active_area &&
+      candidate.inside_roi;
+
+
+    // Keep both accepted and rejected candidates temporarily.
+    //
+    // This is useful for debugging exactly how much the final
+    // X/Y ROI removes after the earlier projected-U/V selection.
+    candidates.push_back(
+      candidate
+    );
+  }
+
+
+  // An event with zero predicted blobs is still a valid result.
+  return true;
+}
+
+
+
+
+
+
+
 void SBSGEMModule::find_2Dhits(){
+
+  // // ============================================================
+  // // TEMPORARY ROI DIAGNOSTIC FOR ML DEPLOYMENT
+  // // Only runs for module(s) where ML is enabled.
+  // // Does NOT modify reconstruction.
+  // // ============================================================
+
+  // if( fUseMLHitFinder ){
+
+  //   static unsigned int ml_roi_debug_call = 0;
+  //   ml_roi_debug_call++;
+
+  //   // Limit output so a long replay does not flood the terminal.
+  //   if( ml_roi_debug_call <= 30 ){
+
+  //     std::cout
+  //       << "\n============================================================\n"
+  //       << "[ML ROI DEBUG::find_2Dhits]\n"
+  //       << "  call                  = " << ml_roi_debug_call << "\n"
+  //       << "  module                = "
+  //       << GetParent()->GetName() << "." << GetName() << "\n"
+  //       << "  fIsDecoded            = " << fIsDecoded << "\n"
+  //       << "  fNstrips_hit          = " << fNstrips_hit << "\n"
+  //       << "  fNstrips_hitU         = " << fNstrips_hitU << "\n"
+  //       << "  fNstrips_hitV         = " << fNstrips_hitV << "\n"
+  //       << "  fStoreAll1Dclusters   = " << fStoreAll1Dclusters << "\n"
+  //       << "  number of constraints = " << fxcmin.size()
+  //       << std::endl;
+
+
+  //     // --------------------------------------------------------
+  //     // Check consistency of the four constraint arrays
+  //     // --------------------------------------------------------
+
+  //     const bool constraint_sizes_ok =
+  //       fxcmin.size() == fxcmax.size() &&
+  //       fxcmin.size() == fycmin.size() &&
+  //       fxcmin.size() == fycmax.size();
+
+
+  //     std::cout
+  //       << "  constraint sizes:\n"
+  //       << "    fxcmin = " << fxcmin.size() << "\n"
+  //       << "    fxcmax = " << fxcmax.size() << "\n"
+  //       << "    fycmin = " << fycmin.size() << "\n"
+  //       << "    fycmax = " << fycmax.size() << "\n"
+  //       << "  sizes consistent = "
+  //       << constraint_sizes_ok
+  //       << std::endl;
+
+
+  //     if( constraint_sizes_ok && !fxcmin.empty() ){
+
+  //       // ------------------------------------------------------
+  //       // Determine the overall U/V envelope of ALL X/Y ROIs.
+  //       //
+  //       // We transform all four corners of each X/Y rectangle
+  //       // with the existing SBS XYtoUV() method.
+  //       // ------------------------------------------------------
+
+  //       bool first_corner = true;
+
+  //       double umin = 0.0;
+  //       double umax = 0.0;
+  //       double vmin = 0.0;
+  //       double vmax = 0.0;
+
+
+  //       for( std::size_t ic = 0; ic < fxcmin.size(); ic++ ){
+
+  //         std::cout
+  //           << "\n  ROI " << ic << " in local X/Y:\n"
+  //           << "    xmin = " << fxcmin[ic] << "\n"
+  //           << "    xmax = " << fxcmax[ic] << "\n"
+  //           << "    ymin = " << fycmin[ic] << "\n"
+  //           << "    ymax = " << fycmax[ic]
+  //           << std::endl;
+
+
+  //         TVector2 corners[4] = {
+  //           TVector2( fxcmin[ic], fycmin[ic] ),
+  //           TVector2( fxcmin[ic], fycmax[ic] ),
+  //           TVector2( fxcmax[ic], fycmin[ic] ),
+  //           TVector2( fxcmax[ic], fycmax[ic] )
+  //         };
+
+
+  //         for( int icorner = 0; icorner < 4; icorner++ ){
+
+  //           TVector2 UV = XYtoUV( corners[icorner] );
+
+  //           std::cout
+  //             << "      corner " << icorner
+  //             << ": X,Y = "
+  //             << corners[icorner].X() << ", "
+  //             << corners[icorner].Y()
+  //             << "  -> U,V = "
+  //             << UV.X() << ", "
+  //             << UV.Y()
+  //             << std::endl;
+
+
+  //           if( first_corner ){
+
+  //             umin = umax = UV.X();
+  //             vmin = vmax = UV.Y();
+
+  //             first_corner = false;
+
+  //           } else {
+
+  //             umin = std::min( umin, UV.X() );
+  //             umax = std::max( umax, UV.X() );
+
+  //             vmin = std::min( vmin, UV.Y() );
+  //             vmax = std::max( vmax, UV.Y() );
+  //           }
+  //         }
+  //       }
+
+
+  //       std::cout
+  //         << "\n  Overall projected ROI envelope:\n"
+  //         << "    U = [" << umin << ", " << umax << "]\n"
+  //         << "    V = [" << vmin << ", " << vmax << "]"
+  //         << std::endl;
+
+
+  //       // ------------------------------------------------------
+  //       // Check decoded fired strips against the projected ROI.
+  //       //
+  //       // SBS strip center convention:
+  //       //
+  //       // position =
+  //       //   (strip + 0.5 - 0.5*Nstrips)*pitch + offset
+  //       //
+  //       // This is the same coordinate convention used by the
+  //       // existing clustering code.
+  //       // ------------------------------------------------------
+
+  //       unsigned int nU_inside = 0;
+  //       unsigned int nV_inside = 0;
+
+  //       unsigned int nU_outside = 0;
+  //       unsigned int nV_outside = 0;
+
+
+  //       std::vector<UInt_t> Ustrips_inside;
+  //       std::vector<UInt_t> Vstrips_inside;
+
+
+  //       for( int ihit = 0; ihit < fNstrips_hit; ihit++ ){
+
+  //         const UInt_t strip = fStrip[ihit];
+
+
+  //         if( fStripIsU[ihit] ){
+
+  //           const double upos =
+  //             ( strip + 0.5 - 0.5*fNstripsU )
+  //             * fUStripPitch
+  //             + fUStripOffset;
+
+
+  //           if( upos >= umin && upos <= umax ){
+
+  //             nU_inside++;
+  //             Ustrips_inside.push_back( strip );
+
+  //           } else {
+
+  //             nU_outside++;
+  //           }
+  //         }
+
+
+  //         if( fStripIsV[ihit] ){
+
+  //           const double vpos =
+  //             ( strip + 0.5 - 0.5*fNstripsV )
+  //             * fVStripPitch
+  //             + fVStripOffset;
+
+
+  //           if( vpos >= vmin && vpos <= vmax ){
+
+  //             nV_inside++;
+  //             Vstrips_inside.push_back( strip );
+
+  //           } else {
+
+  //             nV_outside++;
+  //           }
+  //         }
+  //       }
+
+
+  //       std::cout
+  //         << "\n  Fired-strip ROI summary:\n"
+  //         << "    U inside projected ROI = "
+  //         << nU_inside << "\n"
+  //         << "    U outside projected ROI = "
+  //         << nU_outside << "\n"
+  //         << "    V inside projected ROI = "
+  //         << nV_inside << "\n"
+  //         << "    V outside projected ROI = "
+  //         << nV_outside
+  //         << std::endl;
+
+
+  //       // ------------------------------------------------------
+  //       // Print first few strip IDs so we can inspect them
+  //       // without dumping hundreds of strips.
+  //       // ------------------------------------------------------
+
+  //       const std::size_t max_print = 20;
+
+
+  //       std::cout
+  //         << "\n  First U strips inside projected ROI:";
+
+  //       for(
+  //         std::size_t i = 0;
+  //         i < Ustrips_inside.size() && i < max_print;
+  //         i++
+  //       ){
+  //         std::cout << " " << Ustrips_inside[i];
+  //       }
+
+  //       if( Ustrips_inside.size() > max_print )
+  //         std::cout << " ...";
+
+  //       std::cout << std::endl;
+
+
+  //       std::cout
+  //         << "  First V strips inside projected ROI:";
+
+  //       for(
+  //         std::size_t i = 0;
+  //         i < Vstrips_inside.size() && i < max_print;
+  //         i++
+  //       ){
+  //         std::cout << " " << Vstrips_inside[i];
+  //       }
+
+  //       if( Vstrips_inside.size() > max_print )
+  //         std::cout << " ...";
+
+  //       std::cout << std::endl;
+
+
+  //     } else if( fxcmin.empty() ){
+
+  //       std::cout
+  //         << "\n  *** NO ROI CONSTRAINT PRESENT IN find_2Dhits() ***"
+  //         << std::endl;
+  //     }
+
+  //     std::cout
+  //       << "============================================================\n"
+  //       << std::endl;
+
+  //   } // first 30 calls
+
+  // } // fUseMLHitFinder
+
+
+
+
+
+
+  // ============================================================
+  // ML path
+  //
+  // Runs alongside conventional SBS reconstruction.
+  // Does not modify conventional clusters/hits.
+  // ============================================================
+
+  if(
+    fUseMLHitFinder &&
+    fMLHitFinderInitialized &&
+    fMLHitFinder
+  ){
+
+    std::vector<SBSGEMMLStrip> ml_u_strips;
+    std::vector<SBSGEMMLStrip> ml_v_strips;
+
+
+    const bool roi_ok =
+      CollectMLROIStrips(
+        ml_u_strips,
+        ml_v_strips
+      );
+
+
+    // //temp event dumping for debugging, remove later - Bhasitha
+    // static bool dumped_ml_parity_event = false;
+
+    // if( roi_ok && !dumped_ml_parity_event ){
+
+    //   std::ofstream fout("ml_parity_event_input.txt");
+
+    //   if( fout ){
+
+    //     // Format:
+    //     // event_id module_id strip_id adc0 adc1 adc2 adc3 adc4 adc5
+    //     //
+    //     // module_id = 0 -> U
+    //     // module_id = 1 -> V
+
+    //     const int parity_event_id = 0;
+
+    //     for( const auto& s : ml_u_strips ){
+
+    //       fout
+    //         << parity_event_id << " "
+    //         << 0 << " "
+    //         << s.strip_id;
+
+    //       for( int t = 0; t < 6; t++ )
+    //         fout << " " << s.adc[t];
+
+    //       fout << "\n";
+    //     }
+
+    //     for( const auto& s : ml_v_strips ){
+
+    //       fout
+    //         << parity_event_id << " "
+    //         << 1 << " "
+    //         << s.strip_id;
+
+    //       for( int t = 0; t < 6; t++ )
+    //         fout << " " << s.adc[t];
+
+    //       fout << "\n";
+    //     }
+
+    //     fout.close();
+
+    //     std::cout
+    //       << "[ML PARITY] dumped one event to "
+    //       << "ml_parity_event_input.txt"
+    //       << std::endl;
+
+    //     dumped_ml_parity_event = true;
+    //   }
+    // }
+    if( roi_ok ){
+
+      SBSGEMMLPreprocessor preprocessor;
+
+      SBSGEMMLInput ml_input;
+
+
+      const bool build_ok =
+        preprocessor.Build(
+          ml_u_strips,
+          ml_v_strips,
+          ml_input
+        );
+
+
+      if( build_ok ){
+
+
+
+// //TEMPORARY EVENT DUMPING FOR DEBUGGING
+//         static bool dumped_ml_preprocessor_parity = false;
+
+//         if( !dumped_ml_preprocessor_parity ){
+
+//           // ----------------------------------------------------------
+//           // x_ids
+//           // ----------------------------------------------------------
+
+//           {
+//             std::ofstream fout("cpp_x_ids.txt");
+
+//             for( const int id : ml_input.x_ids ){
+//               fout << id << "\n";
+//             }
+//           }
+
+
+//           // ----------------------------------------------------------
+//           // y_ids
+//           // ----------------------------------------------------------
+
+//           {
+//             std::ofstream fout("cpp_y_ids.txt");
+
+//             for( const int id : ml_input.y_ids ){
+//               fout << id << "\n";
+//             }
+//           }
+
+
+//           // ----------------------------------------------------------
+//           // x3d
+//           //
+//           // Flat C-order:
+//           // [2,6,H,W]
+//           // ----------------------------------------------------------
+
+//           {
+//             std::ofstream fout("cpp_x3d.txt");
+
+//             fout << std::setprecision(
+//               std::numeric_limits<float>::max_digits10
+//             );
+
+//             for( const float value : ml_input.x3d ){
+//               fout << value << "\n";
+//             }
+//           }
+
+
+//           // ----------------------------------------------------------
+//           // extra
+//           //
+//           // Flat C-order:
+//           // [14,H,W]
+//           // ----------------------------------------------------------
+
+//           {
+//             std::ofstream fout("cpp_extra.txt");
+
+//             fout << std::setprecision(
+//               std::numeric_limits<float>::max_digits10
+//             );
+
+//             for( const float value : ml_input.extra ){
+//               fout << value << "\n";
+//             }
+//           }
+
+
+//           // ----------------------------------------------------------
+//           // valid mask
+//           // ----------------------------------------------------------
+
+//           {
+//             std::ofstream fout("cpp_valid_mask.txt");
+
+//             for(
+//               const unsigned char value :
+//               ml_input.valid_mask
+//             ){
+//               fout
+//                 << static_cast<int>(value)
+//                 << "\n";
+//             }
+//           }
+
+
+//           // ----------------------------------------------------------
+//           // Shape information
+//           // ----------------------------------------------------------
+
+//           {
+//             std::ofstream fout("cpp_ml_shape.txt");
+
+//             fout
+//               << ml_input.H << " "
+//               << ml_input.W << "\n";
+//           }
+
+
+//           std::cout
+//             << "[ML PARITY] dumped C++ preprocessor outputs"
+//             << "\n  H,W = "
+//             << ml_input.H
+//             << ","
+//             << ml_input.W
+//             << std::endl;
+
+
+//           dumped_ml_preprocessor_parity = true;
+//         }
+
+// //END TEMPORARY EVENT DUMPING FOR DEBUGGING
+
+
+
+        std::vector<float> ml_logits;
+
+
+        const bool inference_ok =
+          fMLHitFinder->Run(
+            ml_input.x3d,
+            ml_input.extra,
+            ml_input.H,
+            ml_input.W,
+            ml_logits
+          );
+
+
+        // // ============================================================
+        // // ML PARITY: dump raw ONNX logits for first successful event
+        // // ============================================================
+
+        // static bool dumped_ml_logits_parity = false;
+
+        // if(
+        //   inference_ok &&
+        //   !dumped_ml_logits_parity
+        // ){
+        //   std::ofstream fout("cpp_logits.txt");
+
+        //   if( fout ){
+
+        //     fout << std::setprecision(
+        //       std::numeric_limits<float>::max_digits10
+        //     );
+
+        //     for( const float value : ml_logits ){
+        //       fout << value << "\n";
+        //     }
+
+        //     fout.close();
+
+        //     std::cout
+        //       << "[ML PARITY] dumped C++ logits"
+        //       << "\n  logits.size = "
+        //       << ml_logits.size()
+        //       << std::endl;
+
+        //     dumped_ml_logits_parity = true;
+        //   }
+        // }
+        // //END TEMPORARY ML PARITY DUMPING
+
+
+
+
+
+
+
+
+          // ============================================================
+          // ML POSTPROCESSING
+          //
+          // Temporary threshold:
+          //   PRED_THR = 0.60
+          //
+          // This does NOT modify conventional SBS hits.
+          // ============================================================
+
+          SBSGEMMLPostprocessResult ml_post;
+
+          bool postprocess_ok = false;
+
+
+          // Temporary deployment threshold.
+          // We will replace/check this against checkpoint best_thr later.
+          constexpr float ML_PRED_THR = 0.60f;
+
+
+          if( inference_ok ){
+
+            SBSGEMMLPostprocessor postprocessor;
+
+
+            postprocess_ok =
+              postprocessor.Process(
+                ml_logits,
+                ml_input,
+                ML_PRED_THR,
+                ml_post
+              );
+          }
+
+
+          // ============================================================
+          // Convert ML blobs into physical SBS hit candidates
+          // ============================================================
+
+          std::vector<SBSGEMMLHitCandidate>
+            ml_hit_candidates;
+
+
+          bool ml_geometry_ok = false;
+
+
+          if( postprocess_ok ){
+
+            ml_geometry_ok =
+              BuildMLHitCandidates(
+                ml_post,
+                ml_hit_candidates
+              );
+          }
+
+
+
+
+
+
+
+
+
+
+          // // ============================================================
+          // // Temporary ML hit-candidate geometry diagnostics
+          // // ============================================================
+
+          // static unsigned int ml_geometry_debug_count = 0;
+
+
+          // if(
+          //   ml_geometry_ok &&
+          //   ml_geometry_debug_count < 30
+          // ){
+
+          //   const std::size_t naccepted =
+          //     std::count_if(
+          //       ml_hit_candidates.begin(),
+          //       ml_hit_candidates.end(),
+          //       [](const SBSGEMMLHitCandidate& hit){
+          //         return hit.accepted;
+          //       }
+          //     );
+
+
+          //   const std::size_t noutside_active =
+          //     std::count_if(
+          //       ml_hit_candidates.begin(),
+          //       ml_hit_candidates.end(),
+          //       [](const SBSGEMMLHitCandidate& hit){
+          //         return !hit.inside_active_area;
+          //       }
+          //     );
+
+
+          //   const std::size_t noutside_roi =
+          //     std::count_if(
+          //       ml_hit_candidates.begin(),
+          //       ml_hit_candidates.end(),
+          //       [](const SBSGEMMLHitCandidate& hit){
+          //         return
+          //           hit.inside_active_area &&
+          //           !hit.inside_roi;
+          //       }
+          //     );
+
+
+          //   std::cout
+          //     << "\n============================================================\n"
+          //     << "[SBSGEMModule] ML HIT CANDIDATES\n"
+          //     << "  module                  = "
+          //     << GetParent()->GetName()
+          //     << "."
+          //     << GetName()
+          //     << "\n"
+          //     << "  postprocessed blobs     = "
+          //     << ml_post.blobs.size()
+          //     << "\n"
+          //     << "  geometry candidates     = "
+          //     << ml_hit_candidates.size()
+          //     << "\n"
+          //     << "  accepted                = "
+          //     << naccepted
+          //     << "\n"
+          //     << "  outside active area     = "
+          //     << noutside_active
+          //     << "\n"
+          //     << "  active but outside ROI  = "
+          //     << noutside_roi
+          //     << "\n";
+
+
+          //   const std::size_t max_to_print =
+          //     std::min<std::size_t>(
+          //       ml_hit_candidates.size(),
+          //       20
+          //     );
+
+
+          //   for(
+          //     std::size_t i = 0;
+          //     i < max_to_print;
+          //     i++
+          //   ){
+
+          //     const auto& hit =
+          //       ml_hit_candidates[i];
+
+
+          //     std::cout
+          //       << "\n"
+          //       << "  candidate "
+          //       << i
+          //       << ":\n"
+          //       << "    blob_id          = "
+          //       << hit.blob_id
+          //       << "\n"
+          //       << "    U strip          = "
+          //       << hit.u_strip
+          //       << "\n"
+          //       << "    V strip          = "
+          //       << hit.v_strip
+          //       << "\n"
+          //       << "    U,V [m]          = "
+          //       << hit.u
+          //       << ", "
+          //       << hit.v
+          //       << "\n"
+          //       << "    X,Y [m]          = "
+          //       << hit.x
+          //       << ", "
+          //       << hit.y
+          //       << "\n"
+          //       << "    active area      = "
+          //       << hit.inside_active_area
+          //       << "\n"
+          //       << "    inside exact ROI = "
+          //       << hit.inside_roi
+          //       << "\n"
+          //       << "    ROI index        = "
+          //       << hit.roi_index
+          //       << "\n"
+          //       << "    accepted         = "
+          //       << hit.accepted
+          //       << "\n"
+          //       << "    blob area        = "
+          //       << hit.area
+          //       << "\n";
+          //   }
+
+
+          //   if(
+          //     ml_hit_candidates.size() >
+          //     max_to_print
+          //   ){
+          //     std::cout
+          //       << "\n  ... "
+          //       << (
+          //         ml_hit_candidates.size()
+          //         - max_to_print
+          //       )
+          //       << " additional candidates not printed\n";
+          //   }
+
+
+          //   std::cout
+          //     << "============================================================"
+          //     << std::endl;
+
+
+          //   ml_geometry_debug_count++;
+          // }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          
+          // // ============================================================
+          // // ML POSTPROCESSING PARITY DUMP
+          // // ============================================================
+
+          // static bool dumped_ml_postprocess_parity = false;
+
+          // if(
+          //   postprocess_ok &&
+          //   !dumped_ml_postprocess_parity
+          // ){
+
+          //   // ----------------------------------------------------------
+          //   // sigmoid(logits)
+          //   // ----------------------------------------------------------
+
+          //   {
+          //     std::ofstream fout("cpp_prob.txt");
+
+          //     fout << std::setprecision(
+          //       std::numeric_limits<float>::max_digits10
+          //     );
+
+          //     for( const float value : ml_post.prob ){
+          //       fout << value << "\n";
+          //     }
+          //   }
+
+
+          //   // ----------------------------------------------------------
+          //   // sigmoid(logits) * valid_mask
+          //   // ----------------------------------------------------------
+
+          //   {
+          //     std::ofstream fout("cpp_prob_valid.txt");
+
+          //     fout << std::setprecision(
+          //       std::numeric_limits<float>::max_digits10
+          //     );
+
+          //     for( const float value : ml_post.prob_valid ){
+          //       fout << value << "\n";
+          //     }
+          //   }
+
+
+          //   // ----------------------------------------------------------
+          //   // Binary threshold mask
+          //   // ----------------------------------------------------------
+
+          //   {
+          //     std::ofstream fout("cpp_pred_mask.txt");
+
+          //     for(
+          //       const unsigned char value :
+          //       ml_post.pred_mask
+          //     ){
+          //       fout
+          //         << static_cast<int>(value)
+          //         << "\n";
+          //     }
+          //   }
+
+
+          //   // ----------------------------------------------------------
+          //   // Blob table
+          //   //
+          //   // Columns:
+          //   //
+          //   // blob_id
+          //   // cy
+          //   // cx
+          //   // iy
+          //   // ix
+          //   // y_strip   (V)
+          //   // x_strip   (U)
+          //   // area
+          //   // real_area
+          //   // ----------------------------------------------------------
+
+          //   {
+          //     std::ofstream fout("cpp_blobs.txt");
+
+          //     fout << std::setprecision(
+          //       std::numeric_limits<double>::max_digits10
+          //     );
+
+          //     for( const auto& blob : ml_post.blobs ){
+
+          //       fout
+          //         << blob.blob_id << " "
+          //         << blob.cy << " "
+          //         << blob.cx << " "
+          //         << blob.iy << " "
+          //         << blob.ix << " "
+          //         << blob.y_strip << " "
+          //         << blob.x_strip << " "
+          //         << blob.area << " "
+          //         << blob.real_area
+          //         << "\n";
+          //     }
+          //   }
+
+
+          //   std::cout
+          //     << "[ML PARITY] dumped C++ postprocessing outputs"
+          //     << "\n  predicted blobs = "
+          //     << ml_post.blobs.size()
+          //     << std::endl;
+
+
+          //   dumped_ml_postprocess_parity = true;
+          // }
+          // //END ML POSTPROCESSING PARITY DUMP
+
+//           // ============================================================
+//           // Temporary ML postprocessing diagnostics
+//           // ============================================================
+
+//           static unsigned int ml_post_debug_count = 0;
+
+
+//           if(
+//             postprocess_ok &&
+//             ml_post_debug_count < 30
+//           ){
+
+//             const std::size_t npred_pixels =
+//               std::count_if(
+//                 ml_post.pred_mask.begin(),
+//                 ml_post.pred_mask.end(),
+//                 [](unsigned char value){
+//                   return value != 0;
+//                 }
+//               );
+
+
+//             std::cout
+//               << "\n============================================================\n"
+//               << "[SBSGEMModule] ML POSTPROCESS\n"
+//               << "  module             = "
+//               << GetParent()->GetName()
+//               << "."
+//               << GetName()
+//               << "\n"
+//               << "  threshold          = "
+//               << ML_PRED_THR
+//               << "\n"
+//               << "  H,W                = "
+//               << ml_input.H
+//               << ","
+//               << ml_input.W
+//               << "\n"
+//               << "  predicted pixels   = "
+//               << npred_pixels
+//               << "\n"
+//               << "  predicted blobs    = "
+//               << ml_post.blobs.size()
+//               << "\n";
+
+
+//             const std::size_t max_blobs_to_print =
+//               std::min<std::size_t>(
+//                 ml_post.blobs.size(),
+//                 20
+//               );
+
+
+//             for(
+//               std::size_t iblob = 0;
+//               iblob < max_blobs_to_print;
+//               iblob++
+//             ){
+
+//               const auto& blob =
+//                 ml_post.blobs[iblob];
+
+
+//               std::cout
+//                 << "\n"
+//                 << "  blob "
+//                 << blob.blob_id
+//                 << ":\n"
+//                 << "    centroid cy,cx = "
+//                 << blob.cy
+//                 << ", "
+//                 << blob.cx
+//                 << "\n"
+//                 << "    image iy,ix    = "
+//                 << blob.iy
+//                 << ", "
+//                 << blob.ix
+//                 << "\n"
+//                 << "    V strip        = "
+//                 << blob.y_strip
+//                 << "\n"
+//                 << "    U strip        = "
+//                 << blob.x_strip
+//                 << "\n"
+//                 << "    area           = "
+//                 << blob.area
+//                 << "\n"
+//                 << "    real_area      = "
+//                 << blob.real_area
+//                 << "\n";
+//             }
+
+
+//             if(
+//               ml_post.blobs.size() >
+//               max_blobs_to_print
+//             ){
+
+//               std::cout
+//                 << "\n  ... "
+//                 << (
+//                   ml_post.blobs.size()
+//                   - max_blobs_to_print
+//                 )
+//                 << " additional blobs not printed\n";
+//             }
+
+
+//             std::cout
+//               << "============================================================"
+//               << std::endl;
+
+
+//             ml_post_debug_count++;
+//           }
+
+
+// //END TEMPORARY ML POSTPROCESSING DIAGNOSTICS
+
+
+
+        
+        // static unsigned int ml_debug_count = 0;
+
+
+        // if(
+        //   inference_ok &&
+        //   ml_debug_count < 30
+        // ){
+
+        //   const std::size_t nreal_u =
+        //     std::count_if(
+        //       ml_input.x_ids.begin(),
+        //       ml_input.x_ids.end(),
+        //       [](int id){ return id >= 0; }
+        //     );
+
+
+        //   const std::size_t nreal_v =
+        //     std::count_if(
+        //       ml_input.y_ids.begin(),
+        //       ml_input.y_ids.end(),
+        //       [](int id){ return id >= 0; }
+        //     );
+
+
+        //   std::cout
+        //     << "\n============================================================\n"
+        //     << "[SBSGEMModule] REAL ML EVENT\n"
+        //     << "  module              = "
+        //     << GetParent()->GetName()
+        //     << "."
+        //     << GetName()
+        //     << "\n"
+        //     << "  decoded strips       = "
+        //     << fNstrips_hit
+        //     << "\n"
+        //     << "  ROI input U strips   = "
+        //     << ml_u_strips.size()
+        //     << "\n"
+        //     << "  ROI input V strips   = "
+        //     << ml_v_strips.size()
+        //     << "\n"
+        //     << "  real U image cols    = "
+        //     << nreal_u
+        //     << "\n"
+        //     << "  real V image rows    = "
+        //     << nreal_v
+        //     << "\n"
+        //     << "  H,W                  = "
+        //     << ml_input.H
+        //     << ","
+        //     << ml_input.W
+        //     << "\n"
+        //     << "  x3d.size             = "
+        //     << ml_input.x3d.size()
+        //     << "\n"
+        //     << "  extra.size           = "
+        //     << ml_input.extra.size()
+        //     << "\n"
+        //     << "  logits.size          = "
+        //     << ml_logits.size()
+        //     << "\n"
+        //     << "============================================================"
+        //     << std::endl;
+
+
+        //   ml_debug_count++;
+        // }
+      }
+    }
+  }
+
+
+
+
   // Let's handle this the following way. We only want to call 1D cluster-finding and 2D hit finding ONCE, regardless of
   // the number of constraints! 
   // This means that if we want to handle MORE than one constraint point, we MUST set fStoreAll1Dclusters to true
