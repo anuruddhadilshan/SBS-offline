@@ -12,31 +12,31 @@ project(sbs)
 
 
 #----------------------------------------------------------------------------
-# ONNX Runtime - Bhasitha
+# ONNX Runtime
 #----------------------------------------------------------------------------
-set(ONNXRUNTIME_ROOT
-  "/home/bhasitha/Tracking_ML/Deployment/software/onnxruntime/onnxruntime-linux-x64-1.25.1"
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of an ONNX Runtime installation")
+
+find_path(ONNXRUNTIME_INCLUDE_DIR
+  NAMES onnxruntime_cxx_api.h
+  HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT
+  PATH_SUFFIXES include include/onnxruntime
 )
 
-set(ONNXRUNTIME_INCLUDE_DIR
-  "${ONNXRUNTIME_ROOT}/include"
+find_library(ONNXRUNTIME_LIBRARY
+  NAMES onnxruntime
+  HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT
+  PATH_SUFFIXES lib lib64
 )
 
-set(ONNXRUNTIME_LIBRARY
-  "${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so"
-)
-
-if(NOT EXISTS "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h")
+if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
   message(FATAL_ERROR
-    "ONNX Runtime header not found at ${ONNXRUNTIME_INCLUDE_DIR}"
+    "ONNX Runtime was not found. Install ONNX Runtime and configure with "
+    "-DONNXRUNTIME_ROOT=/path/to/onnxruntime (the directory containing include/ and lib/)."
   )
 endif()
 
-if(NOT EXISTS "${ONNXRUNTIME_LIBRARY}")
-  message(FATAL_ERROR
-    "ONNX Runtime library not found at ${ONNXRUNTIME_LIBRARY}"
-  )
-endif()
+message(STATUS "ONNX Runtime include directory: ${ONNXRUNTIME_INCLUDE_DIR}")
+message(STATUS "ONNX Runtime library: ${ONNXRUNTIME_LIBRARY}")
 
 
 

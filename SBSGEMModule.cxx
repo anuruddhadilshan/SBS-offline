@@ -254,10 +254,7 @@ SBSGEMModule::SBSGEMModule( const char *name, const char *description,
   fUseMLHitFinder = kFALSE;
   fMLHitFinderInitialized = kFALSE;
 
-  fMLModelPath =
-    "/work/halla/sbs/bhasitha/"
-    "Tracking_ML/Deployment/models/"
-    "gem_hitfinder.onnx";
+  fMLModelPath = "gem_hitfinder.onnx";
 
   return;
 }
@@ -370,6 +367,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     { "threshold_sample",  &fThresholdSample, kDouble, 0, 1, 1}, //(optional): threshold on max. ADC sample to keep strip (baseline-subtracted)
     { "threshold_stripsum", &fThresholdStripSum, kDouble, 0, 1, 1}, //(optional): threshold on sum of ADC samples on a strip (baseline-subtracted)
     { "threshold_clustersum", &fThresholdClusterSum, kDouble, 0, 1, 1}, //(optional): threshold on sum of all ADCs over all strips in a cluster (baseline-subtracted)
+    { "ml_model_path", &fMLModelPath, kString, 0, 1, 1}, // optional ONNX model path, searchable at tracker level
     { "threshold_sample_deconv", &fThresholdSampleDeconv, kDouble, 0, 1, 1 },
     { "threshold_maxcombo_deconv", &fThresholdDeconvADCMaxCombo, kDouble, 0, 1, 1 },
     { "threshold_clustersum_deconv", &fThresholdClusterSumDeconv, kDouble, 0, 1, 1 },
