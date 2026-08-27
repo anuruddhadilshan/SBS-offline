@@ -7,6 +7,25 @@
 
 
 // ============================================================
+// One real physical image cell in a predicted ML blob
+// ============================================================
+
+struct SBSGEMMLBlobCell {
+
+  // Image row/column indices
+  int iy = -1;
+  int ix = -1;
+
+  // Physical GEM strip IDs
+  int u_strip = -1;
+  int v_strip = -1;
+
+  // Sigmoid probability for this cell
+  float probability = 0.0f;
+};
+
+
+// ============================================================
 // One predicted ML blob
 //
 // Naming matches the Python output:
@@ -35,6 +54,15 @@ struct SBSGEMMLBlob {
 
   // Number of real physical pixels used for centroid
   int real_area = 0;
+
+  // Real physical cells belonging to this connected component.
+  // Fake spacer rows/columns are not included.
+  std::vector<SBSGEMMLBlobCell> cells;
+
+  // Sorted unique physical-strip projections of cells.
+  // x/image columns -> U, y/image rows -> V.
+  std::vector<int> u_strips;
+  std::vector<int> v_strips;
 };
 
 

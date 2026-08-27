@@ -322,6 +322,14 @@ bool SBSGEMMLPostprocessor::Process(
       double sum_y_real = 0.0;
       double sum_x_real = 0.0;
 
+      // Preserve the full real-cell membership so downstream
+      // reconstruction can project this 2D blob into U and V
+      // strip clusters.
+      std::vector<SBSGEMMLBlobCell> cells;
+
+      std::vector<int> u_strips;
+      std::vector<int> v_strips;
+
 
       while( !q.empty() ){
 
@@ -352,6 +360,29 @@ bool SBSGEMMLPostprocessor::Process(
 
           sum_x_real +=
             static_cast<double>(x);
+
+
+          SBSGEMMLBlobCell cell;
+
+          cell.iy =
+            static_cast<int>(y);
+
+          cell.ix =
+            static_cast<int>(x);
+
+          cell.u_strip =
+            input.x_ids[x];
+
+          cell.v_strip =
+            input.y_ids[y];
+
+          cell.probability =
+            output.prob_valid[idx];
+
+          cells.push_back(cell);
+
+          u_strips.push_back(cell.u_strip);
+          v_strips.push_back(cell.v_strip);
         }
 
 
@@ -414,6 +445,28 @@ bool SBSGEMMLPostprocessor::Process(
 
       if( real_area == 0 )
         continue;
+
+
+      // Store each physical strip once and in ascending order.
+      std::sort(
+        u_strips.begin(),
+        u_strips.end()
+      );
+
+      u_strips.erase(
+        std::unique(u_strips.begin(), u_strips.end()),
+        u_strips.end()
+      );
+
+      std::sort(
+        v_strips.begin(),
+        v_strips.end()
+      );
+
+      v_strips.erase(
+        std::unique(v_strips.begin(), v_strips.end()),
+        v_strips.end()
+      );
 
 
       // ========================================================
@@ -530,6 +583,16 @@ bool SBSGEMMLPostprocessor::Process(
 
       blob.real_area =
         real_area;
+
+
+      blob.cells =
+        cells;
+
+      blob.u_strips =
+        u_strips;
+
+      blob.v_strips =
+        v_strips;
 
 
       output.blobs.push_back(

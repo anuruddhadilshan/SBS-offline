@@ -10,6 +10,7 @@
 
 //For ML inference: Bhasitha
 #include "SBSGEMMLPreprocessor.h"
+#include "SBSGEMMLPostprocessor.h"
 #include <memory>
 #include <string>
 
@@ -53,6 +54,7 @@ struct sbsgemhit_t { //2D reconstructed hits
   Bool_t keep;     //Should this cluster be considered for tracking? We use this variable to implement "cluster quality" cuts (thresholds, XY ADC and time correlation, etc.)
   Bool_t ontrack;  //Is this cluster on any track?
   Bool_t highquality; //is this a "high quality" hit?
+  Bool_t isMLhit; // is this a hit from a ML predicted 'blob'? 
   Int_t trackidx; //Index of track containing this cluster (within the array of tracks found by the parent SBSGEMTracker
   UInt_t iuclust;  //Index in (1D) U cluster array of the "U" cluster used to define this 2D hit.
   UInt_t ivclust;  //Index in (1D) V cluster array of the "V" cluster used to define this 2D hit.
@@ -200,6 +202,10 @@ struct SBSGEMMLHitCandidate {
 
   // Final decision for this stage
   bool accepted = false;
+
+  // Sorted unique physical-strip projections of cells.
+  std::vector<int> u_strips;
+  std::vector<int> v_strips;
 };
 
 
@@ -244,24 +250,22 @@ class SBSGEMModule : public THaSubDetector {
   // ML: collect decoded U/V strips that are relevant to SBS ROI - Bhasitha
   // ============================================================
 
-  bool CollectMLROIStrips(
-      std::vector<SBSGEMMLStrip>& u_strips,
-      std::vector<SBSGEMMLStrip>& v_strips
-  );
+  bool CollectMLROIStrips( std::vector<SBSGEMMLStrip>& u_strips, std::vector<SBSGEMMLStrip>& v_strips);
 
   // ============================================================
   // ML: convert predicted blobs into physical 2D hit candidates
   // and apply active-area + exact X/Y ROI checks.
   // ============================================================
 
-  bool BuildMLHitCandidates(
-      const SBSGEMMLPostprocessResult& post,
-      std::vector<SBSGEMMLHitCandidate>& candidates
-  );
+  bool BuildMLHitCandidates( const SBSGEMMLPostprocessResult& post, std::vector<SBSGEMMLHitCandidate>& candidates );
 
+  // ML: generate candidate U and V, 1D clusters from the ML hit candidates - Anu
+  bool make_cluster_1D_ML( const std::vector<int>& input_strips, SBSGEM::GEMaxis_t axis, sbsgemcluster_t& clusttemp ); 
 
-
-
+  bool make_2Dhit_ML( UInt_t iu, UInt_t iv, const SBSGEMMLBlob& blob, sbsgemhit_t& hittemp );
+  
+  // ML: Single method that handles U/V clustering and 2D hit candidate generation from ML postprocessing results - Anu
+  bool Make1DClustersAnd2DHitsFromMLblobs( const std::vector<SBSGEMMLBlob>& blobs );
 
   // fill the 2D hit arrays from the 1D cluster arrays:
   void fill_2D_hit_arrays(); 
