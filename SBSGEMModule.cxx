@@ -346,6 +346,10 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   std::vector<double> t0hit_temp, tsigmahit_temp;
   std::vector<double> t0hit_deconv_temp, tsigmahit_deconv_temp;
   std::vector<double> t0hit_fit_temp, tsigmahit_fit_temp;
+
+  // Initialize ML hit finding to false. We only do ML hit finding if it is specifically mentioned in the DB.
+  fUseMLHitFinder = kFALSE;
+  int use_ml_hitfinder = fUseMLHitFinder ? 1 : 0;
   
   const DBRequest request[] = {
     { "chanmap",        &fChanMapData,        kIntV, 0, 0, 0}, // mandatory: decode map info
@@ -468,6 +472,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     { "threshV_wTScorr_vs_trigphase", &fThreshV_wTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
     { "threshU_uTScorr_vs_trigphase", &fThreshU_uTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
     { "threshV_uTScorr_vs_trigphase", &fThreshV_uTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "do_ML_hitfinding", &use_ml_hitfinder, kInt, 0, 1, 1 },
     {0}
   };
   status = LoadDB( file, date, request, fPrefix, 1 ); //The "1" after fPrefix means search up the tree
@@ -1160,50 +1165,17 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   //   }
   // }
 
-
-
-
-
-
-
-
-
-
-
   // ============================================================
-  // ML hit finder initialization - Bhasitha
-  //
-  // Initial deployment test:
-  // enable only sbs.gemFT.m0
+  // ML hit finder initialization - Bhasitha (changed by ADR to be DB configurable 8/27/2026)
   // ============================================================
-
-  fUseMLHitFinder = kFALSE;
+  
+  fUseMLHitFinder = use_ml_hitfinder != 0;
   fMLHitFinderInitialized = kFALSE;
-
-
-  if( GetParent() != nullptr ){
-
-    const std::string parent_name =
-      GetParent()->GetName();
-
-    const std::string module_name =
-      GetName();
-
-
-    if(
-        parent_name == "gemFT" &&
-        module_name == "m0"
-      ){
-
-      fUseMLHitFinder = kTRUE;
-    }
-  }
-
-
+  
   // ============================================================
-  // Initialize ML model only for selected module
+  // Initialize ML model only for selected modules
   // ============================================================
-
+ 
   if( fUseMLHitFinder ){
 
     std::cout
@@ -1217,15 +1189,10 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
 
 
     // Create persistent ML hit finder object
-    fMLHitFinder =
-      std::make_unique<SBSGEMMLHitFinder>();
-
+    fMLHitFinder = std::make_unique<SBSGEMMLHitFinder>();
 
     // Load ONNX model
-    fMLHitFinderInitialized =
-      fMLHitFinder->Initialize(
-        fMLModelPath
-      );
+    fMLHitFinderInitialized = fMLHitFinder->Initialize( fMLModelPath );
 
 
     if( !fMLHitFinderInitialized ){
@@ -1244,11 +1211,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     }
 
 
-    std::cout
-      << "[SBSGEMModule::ReadDatabase] "
-      << "ML model initialized successfully."
-      << std::endl;
-
+    std::cout << "[SBSGEMModule::ReadDatabase] " << "ML model initialized successfully." << std::endl;
 
     // ============================================================
     // Temporary ONNX smoke test
@@ -1446,7 +1409,7 @@ Int_t SBSGEMModule::ReadGeometry( FILE *file, const TDatime &date, Bool_t requir
       fYax.SetXYZ( RotTemp.XY(), RotTemp.YY(), RotTemp.ZY() );
       fZax.SetXYZ( RotTemp.XZ(), RotTemp.YZ(), RotTemp.ZZ() );
     }
-  } else
+  } else 
     DefineAxes(0);
 
   return 0;
@@ -4426,25 +4389,7 @@ void SBSGEMModule::find_2Dhits(){
 
   bool do_ML_hit_finding = fUseMLHitFinder && fMLHitFinderInitialized && fMLHitFinder;
   bool success_ML_hit_finding = false;
-  bool if_FT_m0 = false;
-  
-  if( GetParent() != nullptr ){
-
-    const std::string parent_name =
-      GetParent()->GetName();
-
-    const std::string module_name =
-      GetName();
-
-    if(
-        parent_name == "gemFT" &&
-        module_name == "m0"
-      ){
-
-      if_FT_m0 = true;
-    }
-  }
-
+    
   if( do_ML_hit_finding ){
 
     std::vector<SBSGEMMLStrip> ml_u_strips;
@@ -4488,7 +4433,7 @@ void SBSGEMModule::find_2Dhits(){
           //std::vector<SBSGEMMLHitCandidate>  ml_hit_candidates;
 
           // bool ml_geometry_ok = false;
-          if ( if_FT_m0 && ml_post.blobs.size() > 0 ) std::cout << "!!!!!!!!!!!! ML Blobs > 0 !!!!!!!!!!!!!!" << std::endl;
+          // if ( ml_post.blobs.size() > 0 ) std::cout << "!!!!!!!!!!!! ML Blobs > 0 !!!!!!!!!!!!!!" << std::endl;
           if( postprocess_ok ){
 
             success_ML_hit_finding = Make1DClustersAnd2DHitsFromMLblobs( ml_post.blobs );
@@ -4498,8 +4443,8 @@ void SBSGEMModule::find_2Dhits(){
     }
   } 
 
-  if ( if_FT_m0 && success_ML_hit_finding ) std::cout << "*** ML Hit Made! ***" << std::endl;
-  if ( if_FT_m0 ) std::cout << "\n";
+  //if ( success_ML_hit_finding ) std::cout << "*** ML Hit Made! ***" << std::endl;
+  
 
   if ( !do_ML_hit_finding || !success_ML_hit_finding ){
     // Let's handle this the following way. We only want to call 1D cluster-finding and 2D hit finding ONCE, regardless of
@@ -4654,8 +4599,8 @@ void SBSGEMModule::find_2Dhits(){
 
       fill_2D_hit_arrays();
 
-      if ( if_FT_m0 && fN2Dhits > 0 ) std::cout << "###### Normal Hit/s Made! ###########" << std::endl;
-      if ( if_FT_m0 ) std::cout << "\n";
+      // if ( if_FT_m0 && fN2Dhits > 0 ) std::cout << "###### Normal Hit/s Made! ###########" << std::endl;
+      // if ( if_FT_m0 ) std::cout << "\n";
     }
   }
 }
