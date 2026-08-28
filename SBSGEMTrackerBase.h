@@ -149,6 +149,9 @@ protected:
   bool fclustering_done;
   bool ftracking_done;
 
+  bool fDoGoodADCTracking; // MC-only. DB flag: should be attempt good-ADC tracking?
+  bool fGoodADCTrackingDone; // MC-only. Event flag: has good-ADC tracking already run for this event?
+
   //  bool fIsGEPFrontTracker;
   bool fUseElasticConstraint;
   bool fElasticConstraintIsInitialized;
@@ -161,6 +164,9 @@ protected:
 
   //track-finding: 
   void find_tracks();
+
+  // MC-truth track (from good-ADC hits) finding.
+  void find_goodADC_tracks();
 
   // Fill arrays of "good" hits (hits that end up on fitted tracks)
   void fill_good_hit_arrays();
@@ -216,6 +222,8 @@ protected:
   void AddNewTrack( const std::map<int,int> &hitcombo, const std::vector<double> &BestTrack, double chi2ndf, const std::vector<double> &uresid, const std::vector<double> &vresid );
 
   void PurgeHits(int itrack);
+  
+  void AddNewGoodADCTrack( const std::vector<int>& modules, const std::vector<int>& layers, const std::vector<int>& );
   
   //Data members:
   std::vector <SBSGEMModule *> fModules; //array of SBSGEMModules:
@@ -611,6 +619,31 @@ protected:
   std::vector<UInt_t> fHitV_ENABLE_CM; //this is set based on the value for the MAX strip. Except for clusters at the border straddling APV card edges, it should be the same for all strips in a cluster:
   std::vector<UInt_t> fHitV_CM_GOOD;
   std::vector<UInt_t> fHitV_BUILD_ALL_SAMPLES; 
+
+  // Good-ADC tracking //
+  int fNtracks_found_goodADC;
+
+  // One entry per good-ADC track.
+  std::vector<int> fNhitsOnTrack_goodADC; //number of hits on track:
+  std::vector<double> fXtrack_goodADC;
+  std::vector<double> fYtrack_goodADC;
+  std::vector<double> fXptrack_goodADC;
+  std::vector<double> fYptrack_goodADC;
+  std::vector<double> fChi2Track_goodADC; //chi2/ndf
+
+  // Hit membership for each good-ADC track.
+  // Outer index = track index.
+  // Inner index = hit number on the track.
+  std::vector<std::vector<int> > fModListTrack_goodADC; //list of modules containing hits on fitted tracks
+  std::vector<std::vector<int> > fLayerListTrack_goodADC; // list of layers containing hits on fitted tracks.
+  std::vector<std::vector<int> > fHitListTrack_goodADC; //list of hits on fitted tracks: NOTE--the "hit list" of the track refers to the index in the 2D cluster array. To locate the hit and its properties you need the module index and the hit index, i.e., fModules[fModListTrack[ihit]]->fHits[fHitListTrack[ihit]]
+  std::vector<std::vector<double> > fresidu_hits_goodADC; //inclusive residuals: track - hit along direction measured by u strips
+  std::vector<std::vector<double> > fresidv_hits_goodADC; //inclusive residuals: track - hit along direction measured by v strips
+  std::vector<std::vector<double> > feresidu_hits_goodADC; //exclusive residuals: track - hit along direction measured by u strips
+  std::vector<std::vector<double> > feresidv_hits_goodADC; //exclusive residuals: track - hit along direction measured by v strips
+
+   //Fitted track parameters: coordinates at Z = 0 and slopes
+  
 
   //number of layers fired per event
   int fNlayers_hit; //number of layers with ANY strip fired in this layer (U or V)

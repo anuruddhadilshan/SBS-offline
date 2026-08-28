@@ -83,6 +83,7 @@ struct sbsgemhit_t { //2D reconstructed hits
   Double_t Ehit;  //Sum of all ADC values on all strips in the cluster: actually 1/2*( ADCX + ADCY ); i.e., average of cluster sums in X and Y
   /* Double_t Euhit; //Sum of all ADC values on U strips in the cluster; */
   /* Double_t Evhit; //Sum of all ADC values on V strips in the cluster; */
+  Double_t goodADC_Ehit; // MC only. Sum of all good ADC values on all strips in the cluster: 1/2*( ADCgoodX + ADCgoodY ).
   Double_t thit;  //Average of ADC-weighted mean U strip time and V strip time
   /* Double_t tuhit; //Average time of U strips in cluster; */
   /* Double_t tvhit; //Average time of V strips in cluster; */
@@ -112,6 +113,7 @@ struct sbsgemcluster_t {  //1D clusters;
   UInt_t isampmaxDeconv; //time sample in which the deconvoluted cluster-summed ADC samples peaks.
   UInt_t icombomaxDeconv; //2nd time sample of max two-sample combo for cluster-summed deconvoluted ADC samples
   std::vector<Double_t> ADCsamples; //cluster-summed ADC samples (accounting for split fraction)
+  UInt_t nstrips_goodADC; // Number of strips with good-ADC in the cluster. MC only.
   //New variables:
   std::vector<Double_t> DeconvADCsamples; //cluster-summed deconvoluted ADC ssamples (accounting for split fraction)
   Double_t hitpos_mean;  //ADC-weighted mean coordinate along the direction measured by the strip
@@ -132,6 +134,8 @@ struct sbsgemcluster_t {  //1D clusters;
   Double_t uTScorr; 
   Double_t wTScorr; 
   
+   Double_t clustergoodADCsum; // MC only. Sum of good ADCs over all samples on all strips (that have good ADC).
+   
   std::vector<UInt_t> hitindex; //position in decoded hit array of each strip in the cluster:
   UInt_t rawstrip; //Raw APV strip number before decoding 
   UInt_t rawMPD; //Raw MPD number before decoding 
@@ -240,6 +244,9 @@ class SBSGEMModule : public THaSubDetector {
   //new version to do clustering and spatial splitting in each time sample, and then combine the different time samples
   void find_clusters_1D_experimental(SBSGEM::GEMaxis_t axis, Double_t constraint_center=0.0, Double_t constraint_width=1000.0);
 
+  // 1D clustering routine from MC good-ADC (MC trurh in other words).
+  void find_goodADC_clusters_1D(SBSGEM::GEMaxis_t axis);
+
   void add_constraint( TVector2 constraint_center, TVector2 constraint_width );
   
   void find_2Dhits(); // Version with no arguments assumes no constraint points
@@ -270,6 +277,9 @@ class SBSGEMModule : public THaSubDetector {
   // fill the 2D hit arrays from the 1D cluster arrays:
   void fill_2D_hit_arrays(); 
 
+  // fill the 2D hit arrays from the 1D good-ADC cluster arrays:
+  void fill_goodADC_2D_hit_arrays();
+
   //Filter 1D hits by criteria possibly to include ADC threshold, cluster size
   void filter_1Dhits(SBSGEM::GEMaxis_t axis);
   
@@ -293,6 +303,9 @@ class SBSGEMModule : public THaSubDetector {
 
   //function to convert from APV channel number to strip number ordered by position:
   Int_t GetStripNumber( UInt_t rawstrip, UInt_t pos, UInt_t invert );
+
+  //functio to output strip number ordered by position when the position is given the r/o plane coordinates (U/V):
+  Int_t GetStripNumberFromPos( Double_t hitpos, SBSGEM::GEMaxis_t axis );
 
   void PrintPedestals( std::ofstream &dbfile_CM, std::ofstream &daqfile_ped, std::ofstream &daqfile_CM );
   void PrintRawADCrange( std::ofstream &dbfile_ADCrange );
@@ -511,6 +524,13 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<Double_t> fxcmin, fxcmax;
   std::vector<Double_t> fycmin, fycmax;
 
+  // Variables to output min and max physical strip numbers of the constraint region. Main use case is to be utilized to define the constraint region for ML training of the hit-finding model.
+  Int_t fStripUc_min, fStripUc_max;
+  Int_t fStripVc_min, fStripVc_max;
+  Bool_t fIsROIinMod; // Is the ROI defined by constraint regions within the module?
+  // Variables to output min and max values of the constraint region 
+  Double_t fROI_xmin, fROI_xmax, fROI_ymin, fROI_ymax;
+
   //Arrays to temporarily hold raw data from ONE APV card:
   std::vector<UInt_t> fStripAPV;
   std::vector<UInt_t> fRawStripAPV;
@@ -518,6 +538,7 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<Int_t> fRawADC_nopedsub_APV;
   std::vector<Double_t> fPedSubADC_APV;
   std::vector<Double_t> fCommonModeSubtractedADC_APV;
+  std::vector<Int_t> fGoodADC_APV; // Only relevant for MC data. Holds the 'adc_good' vals which are the pure ADC samples from the primary particle.
   
   //Let's store the online calculated common-mode in its own dedicated array as well:
   std::vector<Double_t> fCM_online; //size equal to fN_MPD_TIME_SAMP
@@ -601,6 +622,21 @@ class SBSGEMModule : public THaSubDetector {
   //because the cut definition machinery sucks, let's define some more booleans:
   std::vector<UInt_t> fStripUonTrack;
   std::vector<UInt_t> fStripVonTrack;
+
+  // Strip variables for good-ADC.
+  Int_t fNdecoded_goodADCsamples; //= fNstrips_hit * fN_MPD_TIME_SAMP
+  Int_t fNstrips_hit_goodADC; //total Number of good-ADC strips fired. For MC only.
+  std::vector<UInt_t> fStrip_goodADC;
+  std::vector<SBSGEM::GEMaxis_t> fAxis_goodADC;
+  std::vector<UInt_t> fStripRaw_goodADC;
+  std::vector<bool> fKeepStrip_goodADC;
+  std::vector<std::vector<Int_t> > fGoodADCsamples; // 2D array of good-ADC samples from the primary particle. Only relevant for MC data.
+  std::vector<Double_t> fGoodADCsums; // MC only.
+  std::vector<Double_t> fStripGoodADCavg;
+  std::vector<UInt_t> fStripIsU_goodADC;
+  std::vector<UInt_t> fStripIsV_goodADC;
+  std::vector<UInt_t> fStripUonTrack_goodADC;
+  std::vector<UInt_t> fStripVonTrack_goodADC;
   
   ////// (1D and 2D) Clustering results (see above for definition of struct sbsgemcluster_t and struct sbsgemhit_t):
 
@@ -622,10 +658,18 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<sbsgemcluster_t> fVclusters; //1D clusters along "V" direction
   std::vector<Int_t> fGoodVclustersIndex;  //Vector holding index of good clusters from the fVclusters to be considered for 2D hit reconstruction.
 
+  // Variables for hit-formation from good-ADC. Useful for MC only.
+  UInt_t fNclustU_goodADC; // number of good-ADC U clusters found.
+  UInt_t fNclustV_goodADC; // number of good-ADC V clusters found.
+  std::vector<sbsgemcluster_t> fUclusters_goodADC; // 1D good-ADC clusters along "U" direction.
+  std::vector<sbsgemcluster_t> fVclusters_goodADC; // 1D good-ADC clusters along "V" direction.
+
   UInt_t fMAX2DHITS; // Max. 2d hits per module, to limit memory usage:
   UInt_t fN2Dhits; // number of 2D hits found in region of interest:
   UInt_t fN2Dhits_total; 
+  UInt_t fN2Dhits_goodADC;
   std::vector<sbsgemhit_t> fHits; //2D hit reconstruction results
+  std::vector<sbsgemhit_t> fHits_goodADC; //2D hits reconstructed from good-ADC.  
 
   /////////////////////// Global variables that are more convenient for ROOT Tree/Histogram Output (to the extent needed): ///////////////////////
   //Raw strip info:
@@ -633,6 +677,7 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<Double_t> fADCsamples1D; //1D array to hold ADC samples; should end up with dimension fNstrips_hit*fN_MPD_TIME_SAMP
   std::vector<Int_t> fRawADCsamples1D;
   std::vector<Double_t> fADCsamplesDeconv1D; //1D array of deconvoluted ADC samples
+  std::vector<Int_t> fGoodADCsamples1D; // 1D array to hold the good-ADC samples. Only relevant for MC data. 
   
   /////////////////////// End of global variables needed for ROOT Tree/Histogram output ///////////////////////
   //////////////////////////////////////////////////////////////////////////////////////////////
