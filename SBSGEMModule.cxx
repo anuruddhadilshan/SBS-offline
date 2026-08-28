@@ -4598,8 +4598,66 @@ void SBSGEMModule::find_2Dhits(){
 
   //if ( success_ML_hit_finding ) std::cout << "*** ML Hit Made! ***" << std::endl;
   
+  // Calculating ROI boundaries.
+  double xmin = 10000000, xmax = -10000000, ymin = 10000000, ymax = -10000000; // Define bounds that are sure to be overriden.
+  double umin = 10000000, umax = -10000000, vmin = 10000000, vmax = -10000000; 
 
-  if ( !do_ML_hit_finding || !success_ML_hit_finding ){
+  // Let us loop through all the constraint points and find the above.
+  for ( int icp = 0; icp < fxcmin.size(); icp++  ){
+
+    double xmin_icp = fxcmin[icp];
+    double xmax_icp = fxcmax[icp];
+    double ymin_icp = fycmin[icp];
+    double ymax_icp = fycmax[icp];
+
+    xmin = std::min( xmin, xmin_icp );
+    xmax = std::max( xmax, xmax_icp );
+    ymin = std::min( ymin, ymin_icp );
+    ymax = std::max( ymax, ymax_icp );
+
+    double u00 = xmin_icp * fPxU + ymin_icp * fPyU;
+    double u01 = xmin_icp * fPxU + ymax_icp * fPyU;
+    double u10 = xmax_icp * fPxU + ymin_icp * fPyU;
+    double u11 = xmax_icp * fPxU + ymax_icp * fPyU;
+
+    //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:      
+    umin = std::min( umin, std::min( u00, std::min(u01, std::min(u10, u11) ) ) );
+    umax = std::max( umax, std::max( u00, std::max(u01, std::max(u10, u11) ) ) );
+
+    double v00 = xmin_icp * fPxV + ymin_icp * fPyV;
+    double v01 = xmin_icp * fPxV + ymax_icp * fPyV;
+    double v10 = xmax_icp * fPxV + ymin_icp * fPyV;
+    double v11 = xmax_icp * fPxV + ymax_icp * fPyV;
+
+    vmin = std::min( vmin, std::min( v00, std::min(v01, std::min(v10, v11) ) ) );
+    vmax = std::max( vmax, std::max( v00, std::max(v01, std::max(v10, v11) ) ) );
+  }    
+
+  fROI_xmin = xmin;
+  fROI_xmax = xmax;
+  fROI_ymin = ymin;
+  fROI_ymax = ymax;
+
+  //std::cout << "ROI strip, xmin : xmax : ymin : ymax =                             " << xmin << " : "  << xmax << " : " << ymin << " : " << ymax << std::endl;
+
+  // What strip numbers does these min and max values correspond to? 
+  // Main use case is for ML model training.
+  fStripUc_min = GetStripNumberFromPos(umin, SBSGEM::kUaxis);
+  fStripUc_max = GetStripNumberFromPos(umax, SBSGEM::kUaxis);
+  fStripVc_min = GetStripNumberFromPos(vmin, SBSGEM::kVaxis);
+  fStripVc_max = GetStripNumberFromPos(vmax, SBSGEM::kVaxis);
+
+  if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; // NO overlap of ROI with the module.
+  else{     
+    fIsROIinMod = true;
+    // Clamp the min and max strips to 0 and fNstrips<U/V>, respectively, if they are out-of-bounds.
+    if ( fStripUc_min < 0 )          fStripUc_min = 0;
+    if ( fStripUc_max >= fNstripsU ) fStripUc_max = fNstripsU - 1;
+    if ( fStripVc_min < 0 )          fStripVc_min = 0;
+  if ( fStripVc_max >= fNstripsV ) fStripVc_max = fNstripsV - 1;
+  }    
+
+  if ( !do_ML_hit_finding /*|| !success_ML_hit_finding*/ ){
     // Let's handle this the following way. We only want to call 1D cluster-finding and 2D hit finding ONCE, regardless of
     // the number of constraints! 
     // This means that if we want to handle MORE than one constraint point, we MUST set fStoreAll1Dclusters to true
@@ -4671,63 +4729,63 @@ void SBSGEMModule::find_2Dhits(){
 
     if( fxcmin.size() >= 1 ){
 
-      double xmin = 10000000, xmax = -10000000, ymin = 10000000, ymax = -10000000; // Define bounds that are sure to be overriden.
-      double umin = 10000000, umax = -10000000, vmin = 10000000, vmax = -10000000; 
+      // double xmin = 10000000, xmax = -10000000, ymin = 10000000, ymax = -10000000; // Define bounds that are sure to be overriden.
+      // double umin = 10000000, umax = -10000000, vmin = 10000000, vmax = -10000000; 
 
-      // Let us loop through all the constraint points and find the above.
-      for ( int icp = 0; icp < fxcmin.size(); icp++  ){
+      // // Let us loop through all the constraint points and find the above.
+      // for ( int icp = 0; icp < fxcmin.size(); icp++  ){
 
-        double xmin_icp = fxcmin[icp];
-        double xmax_icp = fxcmax[icp];
-        double ymin_icp = fycmin[icp];
-        double ymax_icp = fycmax[icp];
+      //   double xmin_icp = fxcmin[icp];
+      //   double xmax_icp = fxcmax[icp];
+      //   double ymin_icp = fycmin[icp];
+      //   double ymax_icp = fycmax[icp];
 
-        xmin = std::min( xmin, xmin_icp );
-        xmax = std::max( xmax, xmax_icp );
-        ymin = std::min( ymin, ymin_icp );
-        ymax = std::max( ymax, ymax_icp );
+      //   xmin = std::min( xmin, xmin_icp );
+      //   xmax = std::max( xmax, xmax_icp );
+      //   ymin = std::min( ymin, ymin_icp );
+      //   ymax = std::max( ymax, ymax_icp );
 
-        double u00 = xmin_icp * fPxU + ymin_icp * fPyU;
-        double u01 = xmin_icp * fPxU + ymax_icp * fPyU;
-        double u10 = xmax_icp * fPxU + ymin_icp * fPyU;
-        double u11 = xmax_icp * fPxU + ymax_icp * fPyU;
+      //   double u00 = xmin_icp * fPxU + ymin_icp * fPyU;
+      //   double u01 = xmin_icp * fPxU + ymax_icp * fPyU;
+      //   double u10 = xmax_icp * fPxU + ymin_icp * fPyU;
+      //   double u11 = xmax_icp * fPxU + ymax_icp * fPyU;
 
-        //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:      
-        umin = std::min( umin, std::min( u00, std::min(u01, std::min(u10, u11) ) ) );
-        umax = std::max( umax, std::max( u00, std::max(u01, std::max(u10, u11) ) ) );
+      //   //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:      
+      //   umin = std::min( umin, std::min( u00, std::min(u01, std::min(u10, u11) ) ) );
+      //   umax = std::max( umax, std::max( u00, std::max(u01, std::max(u10, u11) ) ) );
 
-        double v00 = xmin_icp * fPxV + ymin_icp * fPyV;
-        double v01 = xmin_icp * fPxV + ymax_icp * fPyV;
-        double v10 = xmax_icp * fPxV + ymin_icp * fPyV;
-        double v11 = xmax_icp * fPxV + ymax_icp * fPyV;
+      //   double v00 = xmin_icp * fPxV + ymin_icp * fPyV;
+      //   double v01 = xmin_icp * fPxV + ymax_icp * fPyV;
+      //   double v10 = xmax_icp * fPxV + ymin_icp * fPyV;
+      //   double v11 = xmax_icp * fPxV + ymax_icp * fPyV;
 
-        vmin = std::min( vmin, std::min( v00, std::min(v01, std::min(v10, v11) ) ) );
-        vmax = std::max( vmax, std::max( v00, std::max(v01, std::max(v10, v11) ) ) );
-      }    
+      //   vmin = std::min( vmin, std::min( v00, std::min(v01, std::min(v10, v11) ) ) );
+      //   vmax = std::max( vmax, std::max( v00, std::max(v01, std::max(v10, v11) ) ) );
+      // }    
 
-      fROI_xmin = xmin;
-      fROI_xmax = xmax;
-      fROI_ymin = ymin;
-      fROI_ymax = ymax;
+      // fROI_xmin = xmin;
+      // fROI_xmax = xmax;
+      // fROI_ymin = ymin;
+      // fROI_ymax = ymax;
 
-      //std::cout << "ROI strip, xmin : xmax : ymin : ymax =                             " << xmin << " : "  << xmax << " : " << ymin << " : " << ymax << std::endl;
+      // //std::cout << "ROI strip, xmin : xmax : ymin : ymax =                             " << xmin << " : "  << xmax << " : " << ymin << " : " << ymax << std::endl;
 
-      // What strip numbers does these min and max values correspond to? 
-      // Main use case is for ML model training.
-      fStripUc_min = GetStripNumberFromPos(umin, SBSGEM::kUaxis);
-      fStripUc_max = GetStripNumberFromPos(umax, SBSGEM::kUaxis);
-      fStripVc_min = GetStripNumberFromPos(vmin, SBSGEM::kVaxis);
-      fStripVc_max = GetStripNumberFromPos(vmax, SBSGEM::kVaxis);
+      // // What strip numbers does these min and max values correspond to? 
+      // // Main use case is for ML model training.
+      // fStripUc_min = GetStripNumberFromPos(umin, SBSGEM::kUaxis);
+      // fStripUc_max = GetStripNumberFromPos(umax, SBSGEM::kUaxis);
+      // fStripVc_min = GetStripNumberFromPos(vmin, SBSGEM::kVaxis);
+      // fStripVc_max = GetStripNumberFromPos(vmax, SBSGEM::kVaxis);
 
-      if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; // NO overlap of ROI with the module.
-      else{     
-       fIsROIinMod = true;
-       // Clamp the min and max strips to 0 and fNstrips<U/V>, respectively, if they are out-of-bounds.
-       if ( fStripUc_min < 0 )          fStripUc_min = 0;
-       if ( fStripUc_max >= fNstripsU ) fStripUc_max = fNstripsU - 1;
-       if ( fStripVc_min < 0 )          fStripVc_min = 0;
-      if ( fStripVc_max >= fNstripsV ) fStripVc_max = fNstripsV - 1;
-      }    
+      // if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; // NO overlap of ROI with the module.
+      // else{     
+      //  fIsROIinMod = true;
+      //  // Clamp the min and max strips to 0 and fNstrips<U/V>, respectively, if they are out-of-bounds.
+      //  if ( fStripUc_min < 0 )          fStripUc_min = 0;
+      //  if ( fStripUc_max >= fNstripsU ) fStripUc_max = fNstripsU - 1;
+      //  if ( fStripVc_min < 0 )          fStripVc_min = 0;
+      // if ( fStripVc_max >= fNstripsV ) fStripVc_max = fNstripsV - 1;
+      // }    
 
       //std::cout << "ROI strip, umin : umax : vmin : vmax : IN/OUT? =                   " << umin << " : "  << umax << " : " << vmin << " : " << vmax << " : " << fIsROIinMod << std::endl;
       //std::cout << "ROI strip, istrip_umin : istrip_umax : istrip_vmin : istrip_vmax = " << fStripUc_min << " : " << fStripUc_max << " : " << fStripVc_min << " : " << fStripVc_max << std::endl << std::endl;   
