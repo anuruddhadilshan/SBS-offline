@@ -267,7 +267,7 @@ class SBSGEMModule : public THaSubDetector {
   bool BuildMLHitCandidates( const SBSGEMMLPostprocessResult& post, std::vector<SBSGEMMLHitCandidate>& candidates );
 
   // ML: generate candidate U and V, 1D clusters from the ML hit candidates - Anu
-  bool make_cluster_1D_ML( const std::vector<int>& input_strips, SBSGEM::GEMaxis_t axis, sbsgemcluster_t& clusttemp ); 
+  bool make_cluster_1D_ML( const SBSGEMMLBlob& blob, SBSGEM::GEMaxis_t axis, sbsgemcluster_t& clusttemp ); 
 
   bool make_2Dhit_ML( UInt_t iu, UInt_t iv, const SBSGEMMLBlob& blob, sbsgemhit_t& hittemp );
   

@@ -3882,7 +3882,7 @@ bool SBSGEMModule::BuildMLHitCandidates(
 // 1D cluster formation using the ML predicted blob.
 // 
 
-bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBSGEM::GEMaxis_t axis, sbsgemcluster_t& clusttemp ){
+bool SBSGEMModule::make_cluster_1D_ML( const SBSGEMMLBlob& blob, SBSGEM::GEMaxis_t axis, sbsgemcluster_t& clusttemp ){
 
   // UShort_t maxsep = ( axis == SBSGEM::kUaxis ) ? fMaxNeighborsU_totalcharge : fMaxNeighborsV_totalcharge;
   // UShort_t maxsepcoord = ( axis == SBSGEM::kUaxis ) ? fMaxNeighborsU_hitpos : fMaxNeighborsV_hitpos;
@@ -4015,14 +4015,15 @@ bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBS
 
   if( axis != SBSGEM::kUaxis && axis != SBSGEM::kVaxis ) return false;  
 
-  if( input_strips.empty() ) return false;
+  //if( input_strips.empty() ) return false;
 
   const UInt_t number_of_axis_strips = axis == SBSGEM::kUaxis ? fNstripsU : fNstripsV;
   const Double_t pitch = axis == SBSGEM::kUaxis ? fUStripPitch : fVStripPitch;
   const Double_t offset = axis == SBSGEM::kUaxis ? fUStripOffset : fVStripOffset;
 
   // Work with a sorted, unique copy.
-  std::vector<int> strips =  input_strips;
+  std::vector<int> strips =  axis == SBSGEM::kUaxis ? blob.u_strips : blob.v_strips; //input_strips;
+  if ( strips.empty() ) return false;
 
   std::sort( strips.begin(), strips.end() );
 
@@ -4140,7 +4141,20 @@ bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBS
     total_positive_weight += std::max( 0.0, static_cast<double>(fADCsums[ihit]) );
   }
 
+  double total_positive_probability = 0.0;
+  std::map<int, double> probability_by_strip;
+
+  for ( const auto cell : blob.cells ){
+
+    total_positive_probability += std::max( 0.0, static_cast<double>(cell.probability) );  
+
+    const int strip = ( axis == SBSGEM::kUaxis ) ? cell.u_strip : cell.v_strip;
+    probability_by_strip[strip] += std::max( 0.0, static_cast<double>(cell.probability) );
+  }
+
   const bool use_adc_weights = total_positive_weight > 0.0;
+
+  const bool use_probability_weights = total_positive_probability > 0.0;
 
   double sum_adc = 0.0;
   double sum_adc_deconv = 0.0;
@@ -4153,6 +4167,12 @@ bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBS
   double sum_time2 = 0.0;
   double sum_time_deconv = 0.0;
 
+  double sum_prob = 0.0;
+  double sum_prob_x = 0.0;
+  double sum_prob_x2 = 0.0;
+
+  int icell = 0;
+
   for( int strip : strips ){
 
     const UInt_t ihit = decoded_hitindex.at(strip);
@@ -4162,6 +4182,8 @@ bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBS
     const double strip_adc_deconv = fADCsumsDeconv[ihit];
 
     const double weight = use_adc_weights ? std::max(0.0, strip_adc) : 1.0;
+
+    const double stripORcell_probability = use_probability_weights ? probability_by_strip[strip] : weight;
 
     const double position = ( static_cast<double>(strip) + 0.5 - 0.5 * static_cast<double>( number_of_axis_strips ) ) * pitch + offset;
 
@@ -4181,7 +4203,11 @@ bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBS
 
     sum_adc_deconv += strip_adc_deconv;
 
-    sum_x += position * weight;
+    sum_x += position * stripORcell_probability;
+
+    sum_prob_x += position * stripORcell_probability;
+
+    sum_prob_x2 += position * position * stripORcell_probability;
 
     sum_x2 += position * position * weight;
 
@@ -4192,17 +4218,21 @@ bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBS
     sum_time_deconv += fTmeanDeconv[ihit] * weight;
 
     sum_weight += weight;
+
+    sum_prob += stripORcell_probability;
+
+    icell++;
   }
 
-  if( sum_weight <= 0.0 ) return false;
+  if( sum_prob <= 0.0 ) return false;
 
   clusttemp.clusterADCsum = sum_adc;
 
   clusttemp.clusterADCsumDeconv = sum_adc_deconv;
 
-  clusttemp.hitpos_mean = sum_x / sum_weight;
+  clusttemp.hitpos_mean =  sum_prob_x / sum_prob; //sum_x / sum_weight;
 
-  const double position_variance = std::max( 0.0, sum_x2 / sum_weight - clusttemp.hitpos_mean * clusttemp.hitpos_mean );
+  const double position_variance = std::max( 0.0, sum_prob_x2 / sum_prob - clusttemp.hitpos_mean * clusttemp.hitpos_mean );
 
   clusttemp.hitpos_sigma = std::sqrt(position_variance);
 
@@ -4500,9 +4530,9 @@ bool SBSGEMModule::Make1DClustersAnd2DHitsFromMLblobs( const std::vector<SBSGEMM
     sbsgemcluster_t uclustertemp{};
     sbsgemcluster_t vclustertemp{};
 
-    if( !make_cluster_1D_ML( blob.u_strips, SBSGEM::kUaxis, uclustertemp ) ) continue;
+    if( !make_cluster_1D_ML( blob, SBSGEM::kUaxis, uclustertemp ) ) continue;
     
-    if( !make_cluster_1D_ML( blob.v_strips, SBSGEM::kVaxis, vclustertemp ) ) continue;
+    if( !make_cluster_1D_ML( blob, SBSGEM::kVaxis, vclustertemp ) ) continue;
 
     const UInt_t iu = fUclusters.size();
     const UInt_t iv = fVclusters.size();
