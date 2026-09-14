@@ -14,8 +14,24 @@
 #include <algorithm>
 #include <iomanip>
 
+//For ML inference: Bhasitha
+#include "SBSGEMMLHitFinder.h"
+#include "SBSGEMMLPreprocessor.h"
+#include "SBSGEMMLPostprocessor.h"
+#include <memory>
+#include <string>
+#include <utility>
+#include <fstream> //temp
+#include <limits>
+#include <cmath>
+#include <map>
+#include <chrono>
+
+
 using namespace std;
 //using namespace SBSGEMModule;
+
+// Adapted class accomodating ML GEM hit finding.
 
 //This should not be hard-coded, I think, but read in from the database (or perhaps not, if it never changes? For now we keep it hard-coded)
 // const int APVMAP[128] = {1, 33, 65, 97, 9, 41, 73, 105, 17, 49, 81, 113, 25, 57, 89, 121, 3, 35, 67, 99, 11, 43, 75, 107, 19, 51, 83, 115, 27, 59, 91, 123, 5, 37, 69, 101, 13, 45, 77, 109, 21, 53, 85, 117, 29, 61, 93, 125, 7, 39, 71, 103, 15, 47, 79, 111, 23, 55, 87, 119, 31, 63, 95, 127, 0, 32, 64, 96, 8, 40, 72, 104, 16, 48, 80, 112, 24, 56, 88, 120, 2, 34, 66, 98, 10, 42, 74, 106, 18, 50, 82, 114, 26, 58, 90, 122, 4, 36, 68, 100, 12, 44, 76, 108, 20, 52, 84, 116, 28, 60, 92, 124, 6, 38, 70, 102, 14, 46, 78, 110, 22, 54, 86, 118, 30, 62, 94, 126};
@@ -227,7 +243,22 @@ SBSGEMModule::SBSGEMModule( const char *name, const char *description,
   fDeconvolutionFlag = 0; //Default should be zero
 
   fStoreAll1Dclusters = false;
+
+  fTSfracTrigPhaseIsInitialized = false;
+  fUseTSfracTrigPhaseCorr = false;
+  fTSfracTrigPhaseCorrFlag = -1;
+
+  fTrigPhase = 0; // to avoid compiler warning about use before initialization
   
+  // ============================================================
+  // ML hit finder defaults - Bhasitha
+  // ============================================================
+
+  fUseMLHitFinder = kFALSE;
+  fMLHitFinderInitialized = kFALSE;
+
+  fMLModelPath = "";
+
   return;
 }
 
@@ -300,6 +331,9 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   int usecommonmoderollingaverage = fMeasureCommonMode ? 1 : 0;
   
   int correctcommonmode = fCorrectCommonMode ? 1 : 0;
+
+  int useTSfracTrigPhaseCorr = fUseTSfracTrigPhaseCorr ? 1 : 0;
+  //int tsfractrigphasecorrflag = fTSfracTrigPhaseCorrFlag; 
   
   std::vector<double> TSfrac_mean_temp;
   std::vector<double> TSfrac_sigma_temp;
@@ -313,6 +347,10 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   std::vector<double> t0hit_temp, tsigmahit_temp;
   std::vector<double> t0hit_deconv_temp, tsigmahit_deconv_temp;
   std::vector<double> t0hit_fit_temp, tsigmahit_fit_temp;
+
+  // Initialize ML hit finding to false. We only do ML hit finding if it is specifically mentioned in the DB.
+  fUseMLHitFinder = kFALSE;
+  int use_ml_hitfinder = fUseMLHitFinder ? 1 : 0;
   
   const DBRequest request[] = {
     { "chanmap",        &fChanMapData,        kIntV, 0, 0, 0}, // mandatory: decode map info
@@ -336,6 +374,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     { "threshold_sample",  &fThresholdSample, kDouble, 0, 1, 1}, //(optional): threshold on max. ADC sample to keep strip (baseline-subtracted)
     { "threshold_stripsum", &fThresholdStripSum, kDouble, 0, 1, 1}, //(optional): threshold on sum of ADC samples on a strip (baseline-subtracted)
     { "threshold_clustersum", &fThresholdClusterSum, kDouble, 0, 1, 1}, //(optional): threshold on sum of all ADCs over all strips in a cluster (baseline-subtracted)
+    { "ml_model_path", &fMLModelPath, kString, 0, 1, 0}, // optional ONNX model path, searchable at tracker level
     { "threshold_sample_deconv", &fThresholdSampleDeconv, kDouble, 0, 1, 1 },
     { "threshold_maxcombo_deconv", &fThresholdDeconvADCMaxCombo, kDouble, 0, 1, 1 },
     { "threshold_clustersum_deconv", &fThresholdClusterSumDeconv, kDouble, 0, 1, 1 },
@@ -425,6 +464,16 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     { "rawADCmaxU", &fRawADCmaxU, kDoubleV, 0, 1, 1 },
     { "rawADCminV", &fRawADCminV, kDoubleV, 0, 1, 1 },
     { "rawADCmaxV", &fRawADCmaxV, kDoubleV, 0, 1, 1 },
+    { "useTSfracTrigPhaseCorr", &useTSfracTrigPhaseCorr, kInt, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Umean", &fTSfrac_vs_TrigPhase_Umean, kDoubleV, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Vmean", &fTSfrac_vs_TrigPhase_Vmean, kDoubleV, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Usigma", &fTSfrac_vs_TrigPhase_Usigma, kDoubleV, 0, 1, 1 },
+    { "TSfrac_vs_trigphase_Vsigma", &fTSfrac_vs_TrigPhase_Vsigma, kDoubleV, 0, 1, 1 },
+    { "threshU_wTScorr_vs_trigphase", &fThreshU_wTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "threshV_wTScorr_vs_trigphase", &fThreshV_wTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "threshU_uTScorr_vs_trigphase", &fThreshU_uTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "threshV_uTScorr_vs_trigphase", &fThreshV_uTScorr_vs_TrigPhase, kDoubleV, 0, 1, 1 },
+    { "do_ML_hitfinding", &use_ml_hitfinder, kInt, 0, 1, 1 },
     {0}
   };
   status = LoadDB( file, date, request, fPrefix, 1 ); //The "1" after fPrefix means search up the tree
@@ -519,6 +568,8 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fRawADCminResult_by_APV.resize( nentry );
   fRawADCmaxResult_by_APV.resize( nentry );
   fNumFullReadoutEvents_by_APV.resize( nentry, 0 );
+
+  fNwarnBadCM_by_APV.resize( nentry, 0 );
   
   for( Int_t mapline = 0; mapline < nentry; mapline++ ){
     mpdmap_t thisdata;
@@ -727,6 +778,9 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   fStrip_ENABLE_CM.resize( nstripsmax );
   fStrip_CM_GOOD.resize( nstripsmax );
   fStrip_BUILD_ALL_SAMPLES.resize( nstripsmax );
+
+  fStripTScorr_w.resize( nstripsmax );
+  fStripTScorr_u.resize( nstripsmax );
 
   fStripUonTrack.resize( nstripsmax );
   fStripVonTrack.resize( nstripsmax );
@@ -1059,6 +1113,51 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
       return kInitError;
     }
   }
+
+  // If applicable, check size of TSfrac vs trig phase parameters:
+  fUseTSfracTrigPhaseCorr = useTSfracTrigPhaseCorr >= 0 ? true : false;
+  fTSfracTrigPhaseCorrFlag = useTSfracTrigPhaseCorr;
+
+  if( fUseTSfracTrigPhaseCorr ){ //don't bother with these checks if we aren't going to either calculate or use these quantities! 
+  
+    UInt_t SizeExpect = 6 * fN_MPD_TIME_SAMP;
+    
+    //For now, because we're lazy, we'll require both the parameters and the thresholds to be defined with correct sizes:
+    // 36 for mean and sigma parameters, 6 for correlation coefficient thresholds
+    
+    fTSfracTrigPhaseIsInitialized = ( fTSfrac_vs_TrigPhase_Umean.size() == SizeExpect && 
+				      fTSfrac_vs_TrigPhase_Vmean.size() == SizeExpect && 
+				      fTSfrac_vs_TrigPhase_Usigma.size() == SizeExpect &&
+				      fTSfrac_vs_TrigPhase_Vsigma.size() == SizeExpect );
+    
+    
+    if( !fTSfracTrigPhaseIsInitialized ){
+      fUseTSfracTrigPhaseCorr = false;
+      fTSfracTrigPhaseCorrFlag = -1;
+    } else { // check threshold definitions; if ANY have incorrect size, revert all to default:
+      if( !(fThreshU_wTScorr_vs_TrigPhase.size() == 6 &&
+	    fThreshV_wTScorr_vs_TrigPhase.size() == 6 &&
+	    fThreshU_uTScorr_vs_TrigPhase.size() == 6 &&
+	    fThreshV_uTScorr_vs_TrigPhase.size() == 6 ) ){
+	
+	Warning(Here("ReadDatabase"), "Incorrect size (correct = 6) for TS fraction vs trig phase corr. coeff thresholds, defaulting all to -1 (equivalent to no cut!). Fix database");
+	
+	fThreshU_wTScorr_vs_TrigPhase.resize(6);
+	fThreshV_wTScorr_vs_TrigPhase.resize(6);
+	fThreshU_uTScorr_vs_TrigPhase.resize(6);
+	fThreshV_uTScorr_vs_TrigPhase.resize(6);
+	
+	for( int iphase=0; iphase<6; iphase++ ){
+	  fThreshU_wTScorr_vs_TrigPhase[iphase] = -1.0;
+	  fThreshV_wTScorr_vs_TrigPhase[iphase] = -1.0;
+	  fThreshU_uTScorr_vs_TrigPhase[iphase] = -1.0;
+	  fThreshV_uTScorr_vs_TrigPhase[iphase] = -1.0;
+	}
+      }
+    }
+  } 
+
+    
   
   // for( UInt_t i = 0; i < rawped.size(); i++ ){
   //   if( (i % 2) == 1 ) continue;
@@ -1081,6 +1180,170 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   //     std::cout << "[SBSGEMModule::ReadDatabase]  WARNING: " << " strip " << idx  << " listed but not enough strips in cratemap" << std::endl;
   //   }
   // }
+
+  // ============================================================
+  // ML hit finder initialization - Bhasitha (changed by ADR to be DB configurable 8/27/2026)
+  // ============================================================
+  
+  fUseMLHitFinder = use_ml_hitfinder != 0;
+  fMLHitFinderInitialized = kFALSE;
+  
+  // ============================================================
+  // Initialize ML model only for selected modules
+  // ============================================================
+  if( fUseMLHitFinder ){
+
+      if( fMLModelPath.empty() ){
+
+          std::cerr
+            << "[SBSGEMModule::ReadDatabase] ERROR: "
+            << "ML hit finding enabled but no ml_model_path defined for "
+            << GetParent()->GetName()
+            << "."
+            << GetName()
+            << " (layer "
+            << fLayer
+            << ")"
+            << std::endl;
+
+          fclose(file);
+          return kInitError;
+      }
+
+
+      std::cout
+        << "\n============================================================\n"
+        << "[SBSGEMModule::ReadDatabase] Initializing ML hit finder\n"
+        << "  parent = " << GetParent()->GetName() << "\n"
+        << "  module = " << GetName() << "\n"
+        << "  layer  = " << fLayer << "\n"
+        << "  model  = " << fMLModelPath << "\n"
+        << "============================================================"
+        << std::endl;
+
+    // Create persistent ML hit finder object
+    fMLHitFinder = std::make_unique<SBSGEMMLHitFinder>();
+
+    // Load ONNX model
+    fMLHitFinderInitialized = fMLHitFinder->Initialize( fMLModelPath );
+
+
+    if( !fMLHitFinderInitialized ){
+
+      std::cerr
+        << "[SBSGEMModule::ReadDatabase] ERROR: "
+        << "failed to initialize ML hit finder for "
+        << GetParent()->GetName()
+        << "."
+        << GetName()
+        << std::endl;
+
+      fclose(file);
+
+      return kInitError;
+    }
+
+
+    std::cout << "[SBSGEMModule::ReadDatabase] " << "ML model initialized successfully." << std::endl;
+
+    // ============================================================
+    // Temporary ONNX smoke test
+    //
+    // IMPORTANT:
+    // The model has already been initialized above.
+    //
+    // This test uses dummy zero tensors only to verify:
+    //
+    // SBSGEMModule
+    //      -> SBSGEMMLHitFinder
+    //      -> ONNX Runtime
+    //      -> gem_hitfinder.onnx
+    //      -> logits
+    //
+    // ============================================================
+
+    const std::size_t Htest = 16;
+    const std::size_t Wtest = 16;
+
+
+    std::vector<float> test_x3d(
+      2 * 6 * Htest * Wtest,
+      0.0f
+    );
+
+
+    std::vector<float> test_extra(
+      14 * Htest * Wtest,
+      0.0f
+    );
+
+
+    std::vector<float> test_logits;
+
+
+    const bool test_ok =
+      fMLHitFinder->Run(
+        test_x3d,
+        test_extra,
+        Htest,
+        Wtest,
+        test_logits
+      );
+
+
+    if( !test_ok ){
+
+      std::cerr
+        << "[SBSGEMModule::ReadDatabase] ERROR: "
+        << "ONNX smoke-test inference failed."
+        << std::endl;
+
+      fclose(file);
+
+      return kInitError;
+    }
+
+
+    if( test_logits.size() != Htest * Wtest ){
+
+      std::cerr
+        << "[SBSGEMModule::ReadDatabase] ERROR: "
+        << "unexpected smoke-test output size: "
+        << test_logits.size()
+        << " expected "
+        << Htest * Wtest
+        << std::endl;
+
+      fclose(file);
+
+      return kInitError;
+    }
+
+
+    std::cout
+      << "[SBSGEMModule::ReadDatabase] "
+      << "ONNX smoke-test inference SUCCESS"
+      << std::endl;
+
+    std::cout
+      << "  H,W         = "
+      << Htest
+      << ","
+      << Wtest
+      << std::endl;
+
+    std::cout
+      << "  logits.size = "
+      << test_logits.size()
+      << std::endl;
+
+    std::cout
+      << "============================================================\n"
+      << std::endl;
+
+  } // end if( fUseMLHitFinder )
+
+
 
   fclose(file);
   
@@ -1179,7 +1442,7 @@ Int_t SBSGEMModule::ReadGeometry( FILE *file, const TDatime &date, Bool_t requir
       fYax.SetXYZ( RotTemp.XY(), RotTemp.YY(), RotTemp.ZY() );
       fZax.SetXYZ( RotTemp.XZ(), RotTemp.YZ(), RotTemp.ZZ() );
     }
-  } else
+  } else 
     DefineAxes(0);
 
   return 0;
@@ -1240,6 +1503,8 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "strip.ENABLE_CM", "online common-mode enabled?", kUInt, 0, &(fStrip_ENABLE_CM[0]), &fNstrips_hit },
     { "strip.CM_GOOD", "common-mode out of range? (online failed)", kUInt, 0, &(fStrip_CM_GOOD[0]), &fNstrips_hit },
     { "strip.BUILD_ALL_SAMPLES", "online or offline zero suppression", kUInt, 0, &(fStrip_BUILD_ALL_SAMPLES[0]), &fNstrips_hit },
+    { "strip.TScorr_w", "weighted corr. coeff. with expected time dependence (trigger-phase dependent)", kDouble, 0, &(fStripTScorr_w[0]), &fNstrips_hit },
+    { "strip.TScorr_u", "unweighted corr. coeff. with expected time dependence (trigger-phase dependent)", kDouble, 0, &(fStripTScorr_u[0]), &fNstrips_hit },
     { "strip.ontrackU", "U strip on track", kUInt, 0, &(fStripUonTrack[0]), &fNstrips_hit },
     { "strip.ontrackV", "V strip on track", kUInt, 0, &(fStripVonTrack[0]), &fNstrips_hit },
     { nullptr },
@@ -1301,6 +1566,8 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "clust.clustu_pos",   "u clusters position",   "fUclusters.hitpos_mean" },
     { "clust.clustu_adc",   "u clusters adc sum",   "fUclusters.clusterADCsum" },
     { "clust.clustu_time",   "u clusters time",   "fUclusters.t_mean" },
+    { "clust.uTScorr_U", "u clusters unweighted corr. coeff.", "fUclusters.uTScorr" },
+    { "clust.wTScorr_U", "u clusters unweighted corr. coeff.", "fUclusters.wTScorr" },
     { "clust.nclustv",   "Number of clusters in v",   "fNclustV_pos" },
     { "clust.nclustv_neg",   "Number of clusters in v that are negative",   "fNclustV_neg" },
     { "clust.nclustv_tot", "Total number of V clusters found in total active area", "fNclustV_total" },
@@ -1310,6 +1577,8 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "clust.clustv_pos",   "v clusters position",   "fVclusters.hitpos_mean" },
     { "clust.clustv_adc",   "v clusters adc sum",   "fVclusters.clusterADCsum" },
     { "clust.clustv_time",   "v clusters time",   "fVclusters.t_mean" },
+    { "clust.uTScorr_V", "v clusters unweighted corr. coeff.", "fVclusters.uTScorr" },
+    { "clust.wTScorr_V", "v clusters unweighted corr. coeff.", "fVclusters.wTScorr" },
     { "clust.isnegativeU",   "Is cluster negative?",   "fUclusters.isneg" },
     { "clust.isnegativeV",   "Is cluster negative?",   "fVclusters.isneg" },
     { "clust.isnegontrackU",   "Is cluster negative and on a track?",   "fUclusters.isnegontrack" },
@@ -1336,6 +1605,7 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "hit.hit_ivclust", "index in v cluster array", "fHits.ivclust" },
     { "hit.ontrack", "hit is on track", "fHits.ontrack" },
     {"hit.goodADC_ADCavg", "(goodADCU+goodADCV)/2", "fHits.goodADC_Ehit"},
+    {"hit.isMLhit", "is this a ML hit?", "fHits.isMLhit"},
     { nullptr },
   };
 
@@ -1351,20 +1621,97 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { nullptr },
   };
 
-  RVarDef varmisc[] = {
+  // RVarDef varmisc[] = {
+  //   {"ontrack", "Track passed through this module", "fTrackPassedThrough" },
+  //   {"layer", "Layer number of this module", "fLayer" },
+  //   {"roi.inmod", "Does the region-of-interest defined by the constraint-points/widths overlap with the module?", "fIsROIinMod"},
+  //   {"roi.xmin", "xmin of the region-of-interest", "fROI_xmin"},
+  //   {"roi.xmax", "xmax of the region-of-interest", "fROI_xmax"},
+  //   {"roi.ymin", "ymin of the region-of-interest", "fROI_ymin"},
+  //   {"roi.ymax", "ymax of the region-of-interest", "fROI_ymax"},
+  //   {"roi.ustrip_min", "Minimum U strip within the region-of-interest", "fStripUc_min"},
+  //   {"roi.ustrip_max", "Maximum U strip within the region-of-interest", "fStripUc_max"},
+  //   {"roi.vstrip_min", "Minimum V strip within the region-of-interest", "fStripVc_min"},
+  //   {"roi.vstrip_max", "Maximum V strip within the region-of-interest", "fStripVc_max"},
+  //   { nullptr },
+  // };
+
+RVarDef varmisc[] = {
     {"ontrack", "Track passed through this module", "fTrackPassedThrough" },
     {"layer", "Layer number of this module", "fLayer" },
-    {"roi.inmod", "Does the region-of-interest defined by the constraint-points/widths overlap with the module?", "fIsROIinMod"},
-    {"roi.xmin", "xmin of the region-of-interest", "fROI_xmin"},
-    {"roi.xmax", "xmax of the region-of-interest", "fROI_xmax"},
-    {"roi.ymin", "ymin of the region-of-interest", "fROI_ymin"},
-    {"roi.ymax", "ymax of the region-of-interest", "fROI_ymax"},
-    {"roi.ustrip_min", "Minimum U strip within the region-of-interest", "fStripUc_min"},
-    {"roi.ustrip_max", "Maximum U strip within the region-of-interest", "fStripUc_max"},
-    {"roi.vstrip_min", "Minimum V strip within the region-of-interest", "fStripVc_min"},
-    {"roi.vstrip_max", "Maximum V strip within the region-of-interest", "fStripVc_max"},
+
+    // ============================================================
+    // Global ROI envelope
+    // ============================================================
+
+    {"roi.inmod",
+     "Does the region-of-interest defined by the constraint-points/widths overlap with the module?",
+     "fIsROIinMod"},
+
+    {"roi.xmin",
+     "Global minimum X of all constraint ROIs",
+     "fROI_xmin"},
+
+    {"roi.xmax",
+     "Global maximum X of all constraint ROIs",
+     "fROI_xmax"},
+
+    {"roi.ymin",
+     "Global minimum Y of all constraint ROIs",
+     "fROI_ymin"},
+
+    {"roi.ymax",
+     "Global maximum Y of all constraint ROIs",
+     "fROI_ymax"},
+
+    {"roi.ustrip_min",
+     "Minimum U strip within global ROI envelope",
+     "fStripUc_min"},
+
+    {"roi.ustrip_max",
+     "Maximum U strip within global ROI envelope",
+     "fStripUc_max"},
+
+    {"roi.vstrip_min",
+     "Minimum V strip within global ROI envelope",
+     "fStripVc_min"},
+
+    {"roi.vstrip_max",
+     "Maximum V strip within global ROI envelope",
+     "fStripVc_max"},
+
+
+    // ============================================================
+    // Individual X/Y constraint ROIs
+    //
+    // These are the EXACT rectangles used later by
+    // passed_any_constraint in 2D hit reconstruction.
+    //
+    // Index i corresponds to:
+    //
+    //   fxcmin[i] <= x <= fxcmax[i]
+    //   fycmin[i] <= y <= fycmax[i]
+    //
+    // ============================================================
+
+    {"roi.constraint_xmin",
+     "xmin of each individual constraint ROI",
+     "fxcmin"},
+
+    {"roi.constraint_xmax",
+     "xmax of each individual constraint ROI",
+     "fxcmax"},
+
+    {"roi.constraint_ymin",
+     "ymin of each individual constraint ROI",
+     "fycmin"},
+
+    {"roi.constraint_ymax",
+     "ymax of each individual constraint ROI",
+     "fycmax"},
+
     { nullptr },
-  };
+};
 
   ret = DefineVarsFromList( vartiming, mode );
   ret = DefineVarsFromList( varmisc, mode );
@@ -1415,7 +1762,7 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
   };
 
   ret = DefineVarsFromList( vargoodADChits, mode );
-
+  
   if( ret != kOK )
     return ret;
 
@@ -1453,6 +1800,7 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
   fNstrips_keep_lmaxU = 0;
   fNstrips_keep_lmaxV = 0;
   
+  
   fNclustU = 0;
   fNclustV = 0;
   fNclustU_pos = 0;
@@ -1485,7 +1833,7 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
   fxcmax.clear();
   fycmin.clear();
   fycmax.clear();
-
+  
   //fStripAxis.clear();
   // fADCsamples1D.clear();
   // fStripTrackIndex.clear();
@@ -1514,6 +1862,12 @@ void SBSGEMModule::Clear( Option_t* opt){ //we will want to clear out many more 
 
 Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
   //std::cout << "[SBSGEMModule::Decode " << fName << "]" << std::endl;
+
+  ULong64_t evtime = evdata.GetEvTime();
+
+  UInt_t trigphase = evtime % 6; //In the future: don't hard code this! For now, evtime modulo 6 might work, but some future GEM electronics might have a different clock frequency relative to the TS! 
+
+  fTrigPhase = trigphase;
   
   //initialize generic "strip" counter to zero:
   fNstrips_hit = 0;
@@ -1782,19 +2136,13 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
     }//End check if CM_ENABLED
     
     Int_t nsamp = evdata.GetNumHits( it->crate, it->slot, effChan );
-
-    // if ( nsamp > fN_APV25_CHAN*fN_MPD_TIME_SAMP ) {
-    //   std::cout << "nsamp TOO BIG = " << nsamp << ". Setting to 128*6." << std::endl;
-    //   nsamp = fN_APV25_CHAN*fN_MPD_TIME_SAMP;
-    // }
-
-    //for ANU: printout of number of samples off the crate/slot/apv.
-    //if(strcmp(GetParent()->GetName(), "gemFT")==0 && nsamp>0)cout << " module " << GetName() << " crate " << it->crate << " slot " << it->slot << " apv " << effChan <<  " nsamps " << nsamp << endl;
-    // if(nsamp>128*6)
-    //   std::cout << " Nsamps = " <<  nsamp << " > " << 128*6 << std::endl;
    
-
     if( nsamp > 0 ){ //This APV card has data!
+
+      if( !fIsMC && nhits_cm_flag == 0 ){ //APV card has data but CM flags missing, spit out a warning. THIS SHOULD NEVER HAPPEN!
+	std::cout << "Warning in SBSGEMModule::Decode for module " << GetName()
+		  << ": CM flags missing!" << std::endl;
+      }
       
       // Temporary variable to store the number of hits above negative saturation threshold
       // by time sample. If we have a full readout event and we fail to calculate a good
@@ -1832,7 +2180,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
       // to populate the local arrays; otherwise this code is getting too confusing and bug-prone:
       // First loop over the hits: populate strip, raw strip, raw ADC, ped sub ADC and common-mode-subtracted aDC;
       //ALSO, if this is a full readout event, count the number of hits above the minimum:   
-
+      
       for( int iraw=0; iraw<nsamp; iraw++ ){ //NOTE: iraw = isamp + fN_MPD_TIME_SAMP * istrip
 	int strip = evdata.GetRawData( it->crate, it->slot, effChan, iraw );
 	UInt_t decoded_rawADC = evdata.GetData( it->crate, it->slot, effChan, iraw );
@@ -1844,9 +2192,9 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  ADC_good = (strip & 0x7FF80) >> 7;
 	  //if(strcmp(GetParent()->GetName(), "gemFT")==0){for(int ibit = 32; ibit>=0; ibit--){cout << ((ADC_good & 1<<ibit)>>ibit) << "";}cout << endl;}
 	  //the actual strip number should be the last 7 bits of strip if we have this "good adc" encoded
-	  strip = strip & 0x7F;    
+	  strip = strip & 0x7F;
 	}
-
+	
 	int isamp = iraw%fN_MPD_TIME_SAMP;
 	  
 	Int_t ADC = Int_t( decoded_rawADC );
@@ -1857,10 +2205,6 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  //cout << ADC << " " << (1<<12) << endl;
 	  ADC = ADC - (1<<13);
 	}
-
-  // std::cout << "ADC : ADC_good : strip = " << ADC << " : " << ADC_good << " : " << strip << std::endl;
-  // if ( iraw == nsamp-1 ) std::cout << "END APV" << std::endl;
-
 	rawStrip[iraw] = strip;
 	Strip[iraw] = GetStripNumber( strip, it->pos, it->invert );
 
@@ -2209,9 +2553,12 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    double CMbias = CMbiasDB;
 	    
 	    if( fNeventsOnlineBias_by_APV[apvcounter] >= std::min( UInt_t(100), std::max(UInt_t(10), fN_MPD_TIME_SAMP * fNeventsCommonModeLookBack) ) ){
-	      CMbias = fCommonModeOnlineBiasRollingAverage_by_APV[apvcounter]; 
+	      CMbias = fCommonModeOnlineBiasRollingAverage_by_APV[apvcounter];
+	      CommonModeCorrection[isamp] += 2.0*CMbias*(1.0-double(ngood)/double(fN_APV25_CHAN));  // Only apply when rolling average is filled
+	    } else {
+	      CommonModeCorrection[isamp] = 0.0;
 	    }
-
+	    
 	    //bias is DEFINED as Online common-mode MINUS correction MINUS "true" common-mode:
 	    //"correction" is DEFINED as Online common-mode MINUS "corrected common-mode" and is to be ADDED to the ADC values:
 	    // bias = online CM - (online CM - corrected CM) - true CM = corrected CM - true CM
@@ -2223,7 +2570,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    // = uncorrected ADC + [correction + bias]
 	    // [...] = correction to be ADDED to ADC
 	    // --> corrected correction = correction + bias
-	    CommonModeCorrection[isamp] += 2.0*CMbias*(1.0-double(ngood)/double(fN_APV25_CHAN));
+	    //CommonModeCorrection[isamp] += 2.0*CMbias*(1.0-double(ngood)/double(fN_APV25_CHAN));
 	    
 	    //"TRUE" common-mode is equal to 
 	    
@@ -2501,8 +2848,14 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 			       (static_cast<THaDetector*>(GetParent()))->GetApparatus()->GetName(),
 			       GetParent()->GetName(),
 			       GetName() );
-	  
-	  std::cout << "Warning in SBSGEMModule::Decode for module " << sname << ", bad CM for (axis,pos)=(" << it->axis << ", " << it->pos << ")" << std::endl;
+
+	  fNwarnBadCM_by_APV[it->index]++;
+	  if( fNwarnBadCM_by_APV[it->index] <= 10 ){
+	    std::cout << "Warning in SBSGEMModule::Decode for module " << sname << ", bad CM for (axis,pos)=(" << it->axis << ", " << it->pos << "), skipping..." << std::endl;
+	    if( fNwarnBadCM_by_APV[it->index] == 10 ){
+	      std::cout << "Reached maximum number of warnings for this APV, suppressing further warnings..." << std::endl;
+	    }
+	  }
 	  
 	  continue; 
 	}
@@ -2603,8 +2956,6 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	    fADCsamples_deconv[fNstrips_hit][isamp] = DeconvADCtemp[isamp];
 
-      //fGoodADCsamples[fNstrips_hit][isamp] = goodADCtemp[isamp];
-
 	    ADCsum_deconv += DeconvADCtemp[isamp];
 
 	    if( isamp==0 ){
@@ -2638,7 +2989,6 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    fADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = ADCtemp[isamp];
 	    fRawADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = rawADCtemp[isamp];
 	    fADCsamplesDeconv1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit ] = fADCsamples_deconv[fNstrips_hit][isamp];
-      // fGoodADCsamples1D[isamp + fN_MPD_TIME_SAMP * fNstrips_hit] = goodADCtemp[isamp];
 	    
 	    if( fKeepStrip[fNstrips_hit] && hADCfrac_vs_timesample_allstrips != NULL ){
 	      hADCfrac_vs_timesample_allstrips->Fill( isamp, ADCtemp[isamp]/ADCsum_temp );
@@ -2733,8 +3083,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	  //  fADCsums.push_back( ADCsum_temp ); //sum of all (pedestal-subtracted) samples
 	  fADCsums[fNstrips_hit] = ADCsum_temp;
-	  //fGoodADCsums[fNstrips_hit] = goodADCsum_temp;
-
+	  
 	  //  fStripADCavg.push_back( ADCsum_temp/double(fN_MPD_TIME_SAMP) );
 	  fStripADCavg[fNstrips_hit] = ADCsum_temp/double(fN_MPD_TIME_SAMP);
 	  
@@ -2756,6 +3105,39 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	  //std::cout << "starting pedestal histograms..." << std::endl;
 
+
+	  fStripTScorr_w[fNstrips_hit] = CalcStripTScorr_vs_TrigPhase( fNstrips_hit, trigphase, true ); //weighted correlation with expected pulse shape
+	  fStripTScorr_u[fNstrips_hit] = CalcStripTScorr_vs_TrigPhase( fNstrips_hit, trigphase, false ); //unweighted correlation with expected pulse shape	  
+
+	  // if( fUseTSfracTrigPhaseCorr && fTSfracTrigPhaseIsInitialized ){
+	  //   double thresh_wTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_wTScorr_vs_TrigPhase[trigphase] : fThreshV_wTScorr_vs_TrigPhase[trigphase];
+	  //   double thresh_uTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_uTScorr_vs_TrigPhase[trigphase] : fThreshV_uTScorr_vs_TrigPhase[trigphase];
+
+	  //   bool good_uTScorr = fStripTScorr_u[fNstrips_hit] >= thresh_uTScorr;
+	  //   bool good_wTScorr = fStripTScorr_w[fNstrips_hit] >= thresh_wTScorr;
+
+	  //   bool good_TScorr = true;
+	    
+	  //   switch( fTSfracTrigPhaseCorrFlag ){
+	  //   case 0:
+	  //     good_TScorr = good_uTScorr;
+	  //     break;
+	  //   case 1:
+	  //     good_TScorr = good_wTScorr;
+	  //     break;
+	  //   case 2:
+	  //     good_TScorr = (good_uTScorr || good_wTScorr);
+	  //     break;
+	  //   case 3:
+	  //   default:
+	  //     good_TScorr = (good_uTScorr && good_wTScorr);
+	  //     break;
+	  //   }
+
+	  //   if( !good_TScorr ) fKeepStrip[fNstrips_hit] = false;
+	    
+	  // }
+	    
 	  if( fKeepStrip[fNstrips_hit] ){
 	    fNstrips_keep++;
 	    fNstrips_keepU += isU;
@@ -2767,10 +3149,14 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    }
 	    
 	  }
+
 	  
-	  //if ( fgoodADCsums[fNstrips_hit] != 0 ) std::cout << "strip : ADC : goodADC = " << fStrip[fNstrips_hit] << " : " << fADCsamples[fNstrips_hit][isamp] << " : " << fGoodADCsamples[fNstrips_hit][isamp] << std::endl;
+	  
+	  
 	  fNstrips_hit++;
-	  fNstrips_hit_pos++;	  
+	  fNstrips_hit_pos++;
+	
+	  
 	  
 	} //check if passed zero suppression cuts
 
@@ -2939,7 +3325,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  
 	  //  fADCsums.push_back( ADCsum_temp ); //sum of all (pedestal-subtracted) samples
 	  fADCsums[fNstrips_hit] = ADCsum_temp;
-    	  
+	  
 	  //  fStripADCavg.push_back( ADCsum_temp/double(fN_MPD_TIME_SAMP) );
 	  fStripADCavg[fNstrips_hit] = ADCsum_temp/double(fN_MPD_TIME_SAMP);
 	  
@@ -2971,7 +3357,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	      fNstrips_keep_lmaxV += isV;
 	    }
 	    
-	  }	  
+	  }
+	  
 	  
 	  fNstrips_hit++;
 	  fNstrips_hit_neg++;
@@ -3034,168 +3421,2981 @@ void SBSGEMModule::add_constraint( TVector2 constraint_center, TVector2 constrai
   fycmax.push_back( constraint_center.Y() + constraint_width.Y() );
 }
 
-void SBSGEMModule::find_2Dhits(){
-  // Let's handle this the following way. We only want to call 1D cluster-finding and 2D hit finding ONCE, regardless of
-  // the number of constraints! 
-  // This means that if we want to handle MORE than one constraint point, we MUST set fStoreAll1Dclusters to true
-  // 
 
-  // TString sname;
-  // sname.Form("%s.%s.%s",(static_cast<THaDetector *>(GetParent()) )->GetApparatus()->GetName(),GetParent()->GetName(), GetName() );
 
-  // if( sname.Contains("gemCeF") ){
-  //   std::cout << "Calling hit reconstruction for detector " << (static_cast<THaDetector *>(GetParent()) )->GetApparatus()->GetName() << "."
-  // 	      << GetParent()->GetName() << "." << GetName()
-  // 	      << ", N fired strips = " << fNstrips_hit << std::endl;
-  //   std::cout << "Number of constraints defined = " << fxcmin.size() << std::endl;
-  //   for( int i=0; i<fxcmin.size(); i++ ){
-  //     std::cout << "Constraint " << i << ": (xmin,xmax,ymin,ymax)=("
-  // 		<< fxcmin[i] << ", " << fxcmax[i] << ", "
-  // 		<< fycmin[i] << ", " << fycmax[i] << ")" << std::endl;
+
+// ============================================================
+// SBSGEMModule::CollectMLROIStrips
+//
+// ML preprocessing.
+//
+// IMPORTANT:
+// Match the historical ML evaluation input construction:
+//
+//   U strips:
+//     fStripUc_min <= strip_id <= fStripUc_max
+//
+//   V strips:
+//     fStripVc_min <= strip_id <= fStripVc_max
+//
+// These are the same quantities exported historically as:
+//
+//   roi.ustrip_min
+//   roi.ustrip_max
+//   roi.vstrip_min
+//   roi.vstrip_max
+//
+// Do NOT re-project individual X/Y constraint rectangles here.
+// The ROI strip bounds have already been calculated by
+// find_2Dhits().
+// ============================================================
+
+bool SBSGEMModule::CollectMLROIStrips(
+    std::vector<SBSGEMMLStrip>& u_strips,
+    std::vector<SBSGEMMLStrip>& v_strips
+)
+{
+    u_strips.clear();
+    v_strips.clear();
+
+
+    // --------------------------------------------------------
+    // Decoded strip information must already exist.
+    // --------------------------------------------------------
+
+    if( !fIsDecoded ){
+        return false;
+    }
+
+
+    // --------------------------------------------------------
+    // The ROI must overlap this module.
+    //
+    // fStripUc_min/max and fStripVc_min/max are calculated
+    // earlier in find_2Dhits().
+    // --------------------------------------------------------
+
+    if( !fIsROIinMod ){
+        return false;
+    }
+
+
+    // --------------------------------------------------------
+    // Sanity-check ROI strip bounds.
+    // --------------------------------------------------------
+
+    if(
+        fStripUc_min < 0 ||
+        fStripUc_max < fStripUc_min ||
+        fStripUc_max >= static_cast<int>(fNstripsU)
+    ){
+        return false;
+    }
+
+
+    if(
+        fStripVc_min < 0 ||
+        fStripVc_max < fStripVc_min ||
+        fStripVc_max >= static_cast<int>(fNstripsV)
+    ){
+        return false;
+    }
+
+
+    // --------------------------------------------------------
+    // Loop over exactly the same decoded regular strips
+    // represented historically by:
+    //
+    //   strip.nstripsfired
+    //   strip.istrip
+    //   strip.IsU
+    //   strip.IsV
+    //   strip.ADCsamples
+    //
+    // No ADCsum > 0 cut is applied here, matching the
+    // historical ML input writer.
+    // --------------------------------------------------------
+
+    for( UInt_t ihit = 0; ihit < fNstrips_hit; ++ihit ){
+
+        const bool isU =
+            fStripIsU[ihit] != 0;
+
+        const bool isV =
+            fStripIsV[ihit] != 0;
+
+
+        // Invalid or ambiguous axis assignment.
+        if( isU == isV ){
+            continue;
+        }
+
+
+        const int strip =
+            static_cast<int>(fStrip[ihit]);
+
+
+        // ----------------------------------------------------
+        // Historical ROI selection:
+        //
+        // if U:
+        //   skip if strip < roi_ustrip_min
+        //           or strip > roi_ustrip_max
+        //
+        // if V:
+        //   skip if strip < roi_vstrip_min
+        //           or strip > roi_vstrip_max
+        //
+        // Therefore the boundaries are INCLUDED.
+        // ----------------------------------------------------
+
+        if( isU ){
+
+            if(
+                strip < fStripUc_min ||
+                strip > fStripUc_max
+            ){
+                continue;
+            }
+
+        } else { // V
+
+            if(
+                strip < fStripVc_min ||
+                strip > fStripVc_max
+            ){
+                continue;
+            }
+        }
+
+
+        // ----------------------------------------------------
+        // Build ML strip using the same six processed ADC
+        // samples exported historically through
+        // strip.ADCsamples.
+        // ----------------------------------------------------
+
+        SBSGEMMLStrip mlstrip;
+
+        mlstrip.strip_id =
+            strip;
+
+
+        for( int isamp = 0;
+             isamp < fN_MPD_TIME_SAMP;
+             ++isamp ){
+
+            mlstrip.adc[isamp] =
+                static_cast<float>(
+                    fADCsamples[ihit][isamp]
+                );
+        }
+
+
+        if( isU ){
+            u_strips.push_back(mlstrip);
+        } else {
+            v_strips.push_back(mlstrip);
+        }
+    }
+
+
+    // --------------------------------------------------------
+    // Preprocessor.Build() needs both views.
+    // --------------------------------------------------------
+
+    if(
+        u_strips.empty() ||
+        v_strips.empty()
+    ){
+        return false;
+    }
+
+
+    return true;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ============================================================
+// SBSGEMModule::BuildMLHitCandidates
+//
+// Convert ML blob U/V strip IDs into physical U/V coordinates,
+// transform them to module-local X/Y, and enforce the same
+// active-area and exact X/Y ROI geometry checks used by the
+// conventional SBS 2D-hit reconstruction.
+//
+// IMPORTANT:
+// This function does NOT modify fHits.
+// ============================================================
+
+bool SBSGEMModule::BuildMLHitCandidates(
+    const SBSGEMMLPostprocessResult& post,
+    std::vector<SBSGEMMLHitCandidate>& candidates
+){
+  candidates.clear();
+
+
+  // ============================================================
+  // Validate event-local ROI vectors.
+  // ============================================================
+
+  const bool constraints_ok =
+    !fxcmin.empty() &&
+    fxcmin.size() == fxcmax.size() &&
+    fxcmin.size() == fycmin.size() &&
+    fxcmin.size() == fycmax.size();
+
+
+  if( !constraints_ok ){
+    return false;
+  }
+
+
+  candidates.reserve(
+    post.blobs.size()
+  );
+
+
+  // ============================================================
+  // Loop over ML-predicted blobs.
+  // ============================================================
+
+  for( const auto& blob : post.blobs ){
+
+    const int ustrip =
+      blob.x_strip;
+
+    const int vstrip =
+      blob.y_strip;
+
+
+    // ----------------------------------------------------------
+    // Defensive physical-strip validation.
+    //
+    // Postprocessor should already guarantee real strip IDs,
+    // but keep this check here because this is the boundary
+    // between ML output and SBS detector geometry.
+    // ----------------------------------------------------------
+
+    if(
+      ustrip < 0 ||
+      vstrip < 0 ||
+      ustrip >= static_cast<int>(fNstripsU) ||
+      vstrip >= static_cast<int>(fNstripsV)
+    ){
+      continue;
+    }
+
+
+    SBSGEMMLHitCandidate candidate;
+
+
+    candidate.blob_id = blob.blob_id;
+
+    candidate.u_strip = ustrip;
+    candidate.v_strip = vstrip;
+ 
+    candidate.area = blob.area;
+
+    candidate.real_area = blob.real_area;
+
+    candidate.u_strips = blob.u_strips;
+    candidate.v_strips = blob.v_strips;
+
+    // ==========================================================
+    // Convert physical strip IDs to strip-center coordinates.
+    //
+    // Same SBS convention:
+    //
+    // position = (strip + 0.5 - 0.5*Nstrips)*pitch + offset47
+    // ==========================================================
+
+    candidate.u =
+      (
+        static_cast<double>(ustrip)
+        + 0.5
+        - 0.5 * static_cast<double>(fNstripsU)
+      )
+      * fUStripPitch
+      + fUStripOffset;
+
+
+    candidate.v =
+      (
+        static_cast<double>(vstrip)
+        + 0.5
+        - 0.5 * static_cast<double>(fNstripsV)
+      )
+      * fVStripPitch
+      + fVStripOffset;
+
+
+    // ==========================================================
+    // U/V -> module-local X/Y
+    //
+    // Use SBS's existing geometry implementation.
+    // ==========================================================
+
+    const TVector2 uv(
+      candidate.u,
+      candidate.v
+    );
+
+
+    const TVector2 xy =
+      UVtoXY(uv);
+
+
+    candidate.x =
+      xy.X();
+
+    candidate.y =
+      xy.Y();
+
+
+    // ==========================================================
+    // Check module active area.
+    //
+    // Conventional fill_2D_hit_arrays() performs this before
+    // applying the track-search constraints.
+    // ==========================================================
+
+    candidate.inside_active_area =
+      IsInActiveArea(
+        candidate.x,
+        candidate.y
+      );
+
+
+    // ==========================================================
+    // Exact X/Y ROI check.
+    //
+    // A candidate passes if it lies inside ANY live constraint
+    // rectangle.
+    // ==========================================================
+
+    candidate.inside_roi = false;
+    candidate.roi_index = -1;
+
+
+    if( candidate.inside_active_area ){
+
+      for(
+        std::size_t ic = 0;
+        ic < fxcmin.size();
+        ic++
+      ){
+
+        if(
+          fxcmin[ic] <= candidate.x &&
+          candidate.x <= fxcmax[ic] &&
+          fycmin[ic] <= candidate.y &&
+          candidate.y <= fycmax[ic]
+        ){
+
+          candidate.inside_roi = true;
+
+          candidate.roi_index =
+            static_cast<int>(ic);
+
+          break;
+        }
+      }
+    }
+
+
+    // Final acceptance for this stage.
+    candidate.accepted =
+      candidate.inside_active_area &&
+      candidate.inside_roi;
+
+
+    // Keep both accepted and rejected candidates temporarily.
+    //
+    // This is useful for debugging exactly how much the final
+    // X/Y ROI removes after the earlier projected-U/V selection.
+    candidates.push_back(
+      candidate
+    );
+  }
+
+
+  // An event with zero predicted blobs is still a valid result.
+  return true;
+}
+
+// 1D cluster formation using the ML predicted blob.
+// 
+
+bool SBSGEMModule::make_cluster_1D_ML( const std::vector<int>& input_strips, SBSGEM::GEMaxis_t axis, sbsgemcluster_t& clusttemp ){
+
+  // UShort_t maxsep = ( axis == SBSGEM::kUaxis ) ? fMaxNeighborsU_totalcharge : fMaxNeighborsV_totalcharge;
+  // UShort_t maxsepcoord = ( axis == SBSGEM::kUaxis ) ? fMaxNeighborsU_hitpos : fMaxNeighborsV_hitpos;
+  // UInt_t Nstrips = ( axis == SBSGEM::kUaxis ) ? fNstripsU : fNstripsV;
+  // Double_t pitch = ( axis == SBSGEM::kUaxis ) ? fUStripPitch : fVStripPitch;
+  // Double_t offset = (axis == SBSGEM::kUaxis) ? fUStripOffset : fVStripOffset;
+
+  // std::vector<sbsgemcluster_t> &clusters = (axis == SBSGEM::kUaxis) ? fUclusters : fVclusters;
+  // UInt_t &nclust = (axis == SBSGEM::kUaxis) ? fNclustU : fNclustV;
+  
+  // nclust = 0;
+  // clusters.clear();
+
+  // std::set<UShort_t> striplist; //sorted list of strips for 1D clustering.
+  // std::map<UShort_t, UInt_t> hitindex; //key = strip ID, mapped value = index in decoded hit array, needed to access the other information efficiently:
+  // std::map<UShort_t, Double_t> ADC_strip; // These are the (configuration-dependent) quantities we use for clustering.
+
+  // for ( int ihit=0; ihit < fNstrips_hit; ihit++ ){
+
+  //   if ( fAxis[ihit] == axis ){ 
+
+  //     bool newstrip = (striplist.insert( fStrip[ihit] )).second;
+
+  //     if ( newstrip ){ // should always be true:
+  //       hitindex[fStrip[ihit]] = ihit;
+
+  //       // Do clustering using sums of ADC values over all time samples similar to the regular 1D clustering method.
+  //       ADC_strip[fStrip[ihit]] = fADCsums[ihit];        
+  //     }      
+  //   }
+  // }// End loop over hits.
+
+  // clusters.resize(  candidates.size() ); // Resize the cluster array to the number of ML candidates.
+
+  // // Now loop over the ML candidates and form <U/V> clusters based on the predicted blobs. //
+  // for ( const auto& candidate : candidates ){
+
+  //   sbsgemcluster_t clusttemp;
+  //   clusttemp.nstrips = ( axis == SBSGEM::kUaxis ) ? candidate.u_strips.size() : candidate.v_strips.size();
+  //   clusttemp.istriplo = ( axis == SBSGEM::kUaxis ) ? candidate.u_strips.front() : candidate.v_strips.front();
+  //   clusttemp.istriphi = ( axis == SBSGEM::kUaxis ) ? candidate.u_strips.back() : candidate.v_strips.back();
+    
+  //   const auto& strips = ( axis == SBSGEM::kUaxis ) ? candidate.u_strips : candidate.v_strips;
+  //   int stripmax = -1;    
+  //   // Find the strip with the maximum <U/V> ADC sum within the candidate blob.
+  //   for ( const auto& strip : strips ){
+
+  //     if ( ADC_strip.find(strip) != ADC_strip.end() ){
+
+  //       if ( stripmax == -1 || ADC_strip[strip] > ADC_strip[stripmax] ){
+  //         stripmax = strip;
+  //       }
+  //     }
+  //   }
+
+  //   clusttemp.istripmax = stripmax;
+
+  //   clusttemp.ADCsamples.resize(fN_MPD_TIME_SAMP);
+  //   clusttemp.DeconvADCsamples.resize(fN_MPD_TIME_SAMP, 0.0);
+  //   clusttemp.stripADCsum.clear();
+  //   clusttemp.DeconvADCsum.clear();
+  //   clusttemp.hitindex.clear();
+  //   clusttemp.rawstrip = fStripRaw[hitindex[stripmax]];
+  //   clusttemp.rawMPD = fStripMPD[hitindex[stripmax]];
+  //   clusttemp.rawAPV = fStripADC_ID[hitindex[stripmax]];
+  //   clusttemp.ontrack = false;
+  //   clusttemp.keep = true; // Mark the cluster as "keep" since it is based on the ML prediction.
+
+  //   for ( int isamp=0; isamp<fN_MPD_TIME_SAMP; isamp++ ){ //initialize cluster-summed ADC samples to zero:
+  //     clusttemp.ADCsamples[isamp] = 0.0;
+  //     clusttemp.DeconvADCsamples[isamp] = 0.0;
+  //   }
+
+  //   double ADCmax = ADC_strip[stripmax];
+  //   double sumx = 0.0, sumx2 = 0.0, sumADC = 0.0, sumt = 0.0, sumt2 = 0.0;
+  //   double sumwx = 0.0; 
+
+  //   for ( int istrip=clusttemp.istriplo; istrip<=clusttemp.istriphi; istrip++ ){
+
+  //     double sumweight = ADCmax/( 1.0 + pow((stripmax-istrip)*pitch/fSigma_hitshape, 2) );
+  //     double maxweight = sumweight;
+
+  //     for ( int jstrip=istrip-maxsep; jstrip<=istrip+maxsep; jstrip++ ){
+  //       if ( strips.find( jstrip ) != strips.end() && jstrip != stripmax ){
+  //         sumweight += ADC_strip[jstrip]/( 1.0 + pow((jstrip-istrip)*pitch/fSigma_hitshape, 2) );
+  //       }
+  //     }
+
+  //     double hitpos = (istrip + 0.5  -0.5*Nstrips) * pitch + offset; 
+  //     double ADCstrip = ADC_strip[istrip];
+
+  //     for ( int  isamp=0; isamp<fN_MPD_TIME_SAMP; isamp++){
+  //       clusttemp.ADCsamples[isamp] += fADCsamples[hitindex[istrip]][isamp];
+  //     }
+
+  //     clusttemp.stripADCsum.push_back( fADCsums[hitindex[istrip]] );
+  //     clusttemp.hitindex.push_back( hitindex[istrip] );
+
+  //     sumADC += fADCsums[hitindex[istrip]];     
+
+  //     if ( std::abs( istrip - stripmax ) <= std::max(UShort_t(1),std::min(maxsepcoord,maxsep)) ){
+  //       sumx += hitpos * ADCstrip;
+  //       sumx2 += pow(hitpos,2) * ADCstrip;
+  //       sumwx += ADCstrip;
+  //     }
+  //   }
+
+  //   clusttemp.isampmax = 0; 
+  //   double maxADC = 0.0;
+
+  //   for( int isamp=0; isamp<fN_MPD_TIME_SAMP; isamp++ ){
+  //     if( isamp == 0 || clusttemp.ADCsamples[isamp] > maxADC ){
+  //       maxADC = clusttemp.ADCsamples[isamp];
+  //       clusttemp.isampmax = isamp;
+  //     }
+  //   }
+
+  //   clusttemp.hitpos_mean = sumx / sumwx;
+  //   clusttemp.hitpos_sigma = sqrt( sumx2/sumwx - pow(clusttemp.hitpos_mean,2) );
+  //   clusttemp.clusterADCsum = sumADC;    
+  //   FitClusterTime( clusttemp );
+  //   clusttemp.keep = true;
+
+  //   clusters[nclust] = clusttemp;
+  //   nclust++;
+  // } 
+
+  // Leave a deterministic empty result on failure.
+  clusttemp = sbsgemcluster_t{};
+
+  if( axis != SBSGEM::kUaxis && axis != SBSGEM::kVaxis ) return false;  
+
+  if( input_strips.empty() ) return false;
+
+  const UInt_t number_of_axis_strips = axis == SBSGEM::kUaxis ? fNstripsU : fNstripsV;
+  const Double_t pitch = axis == SBSGEM::kUaxis ? fUStripPitch : fVStripPitch;
+  const Double_t offset = axis == SBSGEM::kUaxis ? fUStripOffset : fVStripOffset;
+  // For ADC averaged hit finder - Bhasitha
+  const UShort_t maxsep =
+      axis == SBSGEM::kUaxis
+        ? fMaxNeighborsU_totalcharge
+        : fMaxNeighborsV_totalcharge;
+
+  const UShort_t maxsepcoord =
+      axis == SBSGEM::kUaxis
+        ? fMaxNeighborsU_hitpos
+        : fMaxNeighborsV_hitpos;
+
+  const int position_radius =
+      static_cast<int>(
+          std::max(
+              UShort_t(1),
+              std::min(maxsepcoord, maxsep)
+          )
+      );
+
+
+  // Work with a sorted, unique copy.
+  std::vector<int> strips =  input_strips;
+
+  std::sort( strips.begin(), strips.end() );
+
+  strips.erase( std::unique(strips.begin(), strips.end() ), strips.end() );
+
+  if( strips.empty() ) return false;
+
+  // Map physical strip number to its event-local decoded-hit index.
+  std::map<int, UInt_t> decoded_hitindex;
+
+  for( int ihit = 0; ihit < fNstrips_hit;ihit++ ){
+    
+    if( fAxis[ihit] != axis ) continue;
+
+    const int strip = static_cast<int>(fStrip[ihit]);
+
+    // Keep the first decoded occurrence, matching the behavior
+    // of conventional clustering.
+    decoded_hitindex.emplace( strip, static_cast<UInt_t>(ihit) );
+  }
+
+  // Validate bounds, continuity, decoded-strip availability,
+  // and waveform dimensions.
+  for( std::size_t i = 0; i < strips.size(); i++ ){
+    
+    const int strip = strips[i];
+
+    if( strip < 0 || strip >= static_cast<int>( number_of_axis_strips ) ) return false;
+    
+    if( i > 0 && strip != strips[i - 1] + 1 ) return false;
+
+    const auto hit_it = decoded_hitindex.find(strip);
+
+    if( hit_it == decoded_hitindex.end() ) return false;
+
+    const UInt_t ihit = hit_it->second;
+
+    if( fADCsamples[ihit].size() < static_cast<std::size_t>(fN_MPD_TIME_SAMP) 
+        || fADCsamples_deconv[ihit].size() < static_cast<std::size_t>( fN_MPD_TIME_SAMP )
+    ){
+      return false;
+    }
+  }
+
+
+
+// // Validate physical bounds, decoded-strip availability,
+// // and waveform dimensions.
+// //
+// // IMPORTANT:
+// // Do NOT require physical strip IDs to be consecutive.
+// // ML image connectivity is defined in the spacer-augmented
+// // image, so a connected blob can legitimately project onto
+// // physical strip IDs with gaps.
+// for( std::size_t i = 0; i < strips.size(); i++ ){
+    
+//     const int strip = strips[i];
+
+//     if(
+//         strip < 0 ||
+//         strip >= static_cast<int>(number_of_axis_strips)
+//     ){
+//         return false;
+//     }
+
+//     const auto hit_it =
+//         decoded_hitindex.find(strip);
+
+//     if( hit_it == decoded_hitindex.end() ){
+//         return false;
+//     }
+
+//     const UInt_t ihit =
+//         hit_it->second;
+
+//     if(
+//         fADCsamples[ihit].size()
+//             < static_cast<std::size_t>(fN_MPD_TIME_SAMP) ||
+//         fADCsamples_deconv[ihit].size()
+//             < static_cast<std::size_t>(fN_MPD_TIME_SAMP)
+//     ){
+//         return false;
+//     }
+// }
+
+
+
+  // Find the decoded strip with the largest regular ADC sum.
+  int stripmax = -1;
+
+  double maximum_strip_adc =  std::numeric_limits<double>::lowest();
+
+  for( int strip : strips ){
+
+    const UInt_t ihit = decoded_hitindex.at(strip);
+
+    const double adc = fADCsums[ihit];
+
+    if( stripmax < 0 || adc > maximum_strip_adc ){
+      stripmax = strip;
+      maximum_strip_adc = adc;
+    }
+  }
+
+  if( stripmax < 0 ) return false;
+
+  const UInt_t maximum_hitindex = decoded_hitindex.at(stripmax);
+
+  clusttemp.nstrips = static_cast<UInt_t>(strips.size());
+
+  clusttemp.istriplo = static_cast<UInt_t>(strips.front());
+
+  clusttemp.istriphi = static_cast<UInt_t>(strips.back());
+
+  clusttemp.istripmax = static_cast<UInt_t>(stripmax);
+
+  clusttemp.rawstrip = fStripRaw[maximum_hitindex];
+
+  clusttemp.rawMPD = fStripMPD[maximum_hitindex];
+
+  clusttemp.rawAPV = fStripADC_ID[maximum_hitindex];
+
+  clusttemp.keep = true;
+  clusttemp.ontrack = false;
+  clusttemp.isneg = false;
+  clusttemp.isnegontrack = false;
+
+  clusttemp.uTScorr = -1000.0;
+  clusttemp.wTScorr = -1000.0;
+
+  clusttemp.ADCsamples.assign( fN_MPD_TIME_SAMP, 0.0 );
+
+  clusttemp.DeconvADCsamples.assign( fN_MPD_TIME_SAMP, 0.0 );
+
+  clusttemp.stripADCsum.clear();
+  clusttemp.DeconvADCsum.clear();
+  clusttemp.hitindex.clear();
+
+  clusttemp.stripADCsum.reserve( strips.size() );
+
+  clusttemp.DeconvADCsum.reserve( strips.size() );
+
+  clusttemp.hitindex.reserve( strips.size() );
+
+  /*
+   * Determine whether positive ADC weighting is possible.
+   *
+   * If every strip has a nonpositive ADC sum, use uniform
+   * weights for position and timing rather than producing a
+   * division by zero or rejecting an otherwise valid ML blob.
+   */
+  // double total_positive_weight = 0.0;
+
+  // for( int strip : strips ){
+
+  //   const UInt_t ihit = decoded_hitindex.at(strip);
+
+  //   total_positive_weight += std::max( 0.0, static_cast<double>(fADCsums[ihit]) );
+  // }
+
+  // const bool use_adc_weights = total_positive_weight > 0.0;
+
+  double sum_adc = 0.0;
+  double sum_adc_deconv = 0.0;
+
+  double sum_x = 0.0;
+  double sum_x2 = 0.0;
+  double sum_weight = 0.0;
+
+  double sum_time = 0.0;
+  double sum_time2 = 0.0;
+  double sum_time_deconv = 0.0;
+
+  for( int strip : strips ){
+
+    const UInt_t ihit = decoded_hitindex.at(strip);
+
+    // const double strip_adc = fADCsums[ihit];
+
+    // const double strip_adc_deconv = fADCsumsDeconv[ihit];
+
+    // // const double weight = use_adc_weights ? std::max(0.0, strip_adc) : 1.0;
+
+    // const double position = ( static_cast<double>(strip) + 0.5 - 0.5 * static_cast<double>( number_of_axis_strips ) ) * pitch + offset;
+
+    // for( int isamp = 0; isamp < fN_MPD_TIME_SAMP; isamp++){
+    //   clusttemp.ADCsamples[isamp] += fADCsamples[ihit][isamp];
+
+    //   clusttemp.DeconvADCsamples[isamp] += fADCsamples_deconv[ihit][isamp];
+    // }
+
+    // clusttemp.stripADCsum.push_back( strip_adc );
+
+    // clusttemp.DeconvADCsum.push_back( strip_adc_deconv );
+
+    // clusttemp.hitindex.push_back( ihit );
+
+    // sum_adc += strip_adc;
+
+    // sum_adc_deconv += strip_adc_deconv;
+
+    // sum_x += position * weight;
+
+    // sum_x2 += position * position * weight;
+
+    // sum_time += fTmean[ihit] * weight;
+
+    // sum_time2 += fTmean[ihit] * fTmean[ihit] * weight;
+
+    // sum_time_deconv += fTmeanDeconv[ihit] * weight;
+
+    // sum_weight += weight;
+
+    // ADC averaged hit finder - Bhasitha
+    const double strip_adc =
+        fADCsums[ihit];
+
+    const double strip_adc_deconv =
+        fADCsumsDeconv[ihit];
+
+    const double position =
+        (
+            static_cast<double>(strip)
+            + 0.5
+            - 0.5 * static_cast<double>(number_of_axis_strips)
+        )
+        * pitch
+        + offset;
+
+
+    // ============================================================
+    // Sum the entire ML-defined 1D cluster.
+    //
+    // Unlike conventional cluster splitting, an ML blob already
+    // identifies this particular hit, so there is no competing
+    // local-maximum split fraction here. Therefore the equivalent
+    // split fraction is 1.
+    // ============================================================
+
+    for( int isamp = 0; isamp < fN_MPD_TIME_SAMP; isamp++ ){
+
+        clusttemp.ADCsamples[isamp] +=
+            fADCsamples[ihit][isamp];
+
+        clusttemp.DeconvADCsamples[isamp] +=
+            fADCsamples_deconv[ihit][isamp];
+    }
+
+
+    clusttemp.stripADCsum.push_back(
+        strip_adc
+    );
+
+    clusttemp.DeconvADCsum.push_back(
+        strip_adc_deconv
+    );
+
+    clusttemp.hitindex.push_back(
+        ihit
+    );
+
+
+    sum_adc += strip_adc;
+
+    sum_adc_deconv += strip_adc_deconv;
+
+
+    // ============================================================
+    // Conventional-style ADC-weighted position.
+    //
+    // Only strips sufficiently close to the ADC-maximum strip are
+    // used for position reconstruction.
+    //
+    // This reproduces the position averaging used by the normal
+    // SBS GEM cluster reconstruction.
+    // ============================================================
+
+    if(
+        std::abs(strip - stripmax)
+            <= position_radius
+    ){
+
+        sum_x +=
+            position * strip_adc;
+
+        sum_x2 +=
+            position * position * strip_adc;
+
+        sum_weight +=
+            strip_adc;
+
+
+        // Conventional reconstruction uses the same strip subset
+        // for the cluster timing quantities.
+        sum_time +=
+            fTmean[ihit] * strip_adc;
+
+        sum_time2 +=
+            fTmean[ihit]
+            * fTmean[ihit]
+            * strip_adc;
+
+        sum_time_deconv +=
+            fTmeanDeconv[ihit] * strip_adc;
+    }
+
+
+
+
+
+  }
+
+  if( sum_weight <= 0.0 ) return false;
+
+  clusttemp.clusterADCsum = sum_adc;
+
+  clusttemp.clusterADCsumDeconv = sum_adc_deconv;
+
+  clusttemp.hitpos_mean = sum_x / sum_weight;
+
+  const double position_variance = std::max( 0.0, sum_x2 / sum_weight - clusttemp.hitpos_mean * clusttemp.hitpos_mean );
+
+  clusttemp.hitpos_sigma = std::sqrt(position_variance);
+
+  clusttemp.t_mean = sum_time / sum_weight;
+
+  const double time_variance = std::max( 0.0, sum_time2 / sum_weight - clusttemp.t_mean * clusttemp.t_mean );
+
+  clusttemp.t_sigma = std::sqrt(time_variance);
+
+  clusttemp.t_mean_deconv = sum_time_deconv / sum_weight;
+
+  /*
+   * Find regular and deconvoluted peak samples and the maximum
+   * adjacent two-sample deconvolution combination.
+   */
+  clusttemp.isampmax = 0;
+  clusttemp.isampmaxDeconv = 0;
+  clusttemp.icombomaxDeconv = 0;
+
+  double maximum_adc_sample = std::numeric_limits<double>::lowest();
+
+  double maximum_deconv_sample = std::numeric_limits<double>::lowest();
+
+  double maximum_deconv_combo = std::numeric_limits<double>::lowest();
+
+  for( int isamp = 0; isamp < fN_MPD_TIME_SAMP; isamp++ ){
+    if( clusttemp.ADCsamples[isamp] > maximum_adc_sample ){
+      maximum_adc_sample = clusttemp.ADCsamples[isamp];
+
+      clusttemp.isampmax = static_cast<UInt_t>(isamp);
+    }
+
+    if( clusttemp.DeconvADCsamples[isamp] > maximum_deconv_sample ){
+      maximum_deconv_sample = clusttemp.DeconvADCsamples[isamp];
+
+      clusttemp.isampmaxDeconv = static_cast<UInt_t>(isamp);
+    }
+
+    double combination = clusttemp.DeconvADCsamples[isamp];
+
+    if( isamp > 0 ){ 
+      combination += clusttemp.DeconvADCsamples[ isamp - 1 ];
+    }
+
+    if( combination > maximum_deconv_combo ){
+      maximum_deconv_combo = combination;
+
+      clusttemp.icombomaxDeconv = static_cast<UInt_t>(isamp);
+    }
+  }
+
+  // Match the conventional handling of the final standalone
+  // deconvoluted sample.
+  const double final_deconv_sample = clusttemp.DeconvADCsamples[ fN_MPD_TIME_SAMP - 1 ];
+
+  if( final_deconv_sample > maximum_deconv_combo ){
+    maximum_deconv_combo = final_deconv_sample;
+
+    clusttemp.icombomaxDeconv = static_cast<UInt_t>( fN_MPD_TIME_SAMP );
+  }
+
+  clusttemp.clusterADCsumDeconvMaxCombo = maximum_deconv_combo;
+
+  FitClusterTime(clusttemp);
+
+  // This calculation divides the sample contents by the
+  // regular cluster ADC sum.
+  if( clusttemp.clusterADCsum > 0.0 ){
+
+    CalcClustTScorr_vs_TrigPhase(
+        clusttemp,
+        axis
+    );
+
+  } else {
+
+    clusttemp.uTScorr = -1000.0;
+    clusttemp.wTScorr = -1000.0;
+  }
+
+  return true;
+}
+
+
+bool SBSGEMModule::make_2Dhit_ML( const UInt_t iu, const UInt_t iv, const SBSGEMMLBlob& blob, sbsgemhit_t& hittemp ){
+  
+  if ( fN2Dhits >= fMAX2DHITS ) {
+    std::cout << "Warning in [SBSGEMModule::make_2Dhit_ML()]: good 2D hit candidates exceeded user maximum of " << fMAX2DHITS << " for module " << GetName() << ", 2D hit list truncated" << std::endl;    
+    return false;
+  }
+
+  if( iu >= fUclusters.size() || iv >= fVclusters.size() ) return false;
+  
+  const auto& ucluster = fUclusters[iu];
+  const auto& vcluster = fVclusters[iv];
+
+  hittemp.iuclust = iu;
+  hittemp.ivclust = iv;
+
+  int nsamp_corr = fN_MPD_TIME_SAMP;
+  int firstsamp_corr = 0;
+
+  hittemp.isMLhit = true;
+  hittemp.keep = true;
+  hittemp.highquality = true; // Make ML hits high-quality.
+  hittemp.ontrack = false;
+  hittemp.trackidx = -1;
+
+  // hittemp.uhit = ucluster.hitpos_mean; // TO-DO: replace w/ ML blob pos.
+  // hittemp.vhit = vcluster.hitpos_mean;
+  // ADC averaged hit finder - Bhasitha
+  hittemp.uhit =
+      (
+          static_cast<double>(blob.x_strip)
+          + 0.5
+          - 0.5 * static_cast<double>(fNstripsU)
+      )
+      * fUStripPitch
+      + fUStripOffset;
+
+
+// ============================================================
+// Use the actual ML-selected physical strip IDs as the
+// reconstructed hit position.
+//
+// blob.x_strip = U strip selected by ML postprocessing
+// blob.y_strip = V strip selected by ML postprocessing
+// ============================================================
+
+if(
+    blob.x_strip < 0 ||
+    blob.x_strip >= static_cast<int>(fNstripsU) ||
+    blob.y_strip < 0 ||
+    blob.y_strip >= static_cast<int>(fNstripsV)
+){
+    return false;
+}
+
+hittemp.uhit =
+    (
+        static_cast<double>(blob.x_strip)
+        + 0.5
+        - 0.5 * static_cast<double>(fNstripsU)
+    )
+    * fUStripPitch
+    + fUStripOffset;
+
+hittemp.vhit =
+    (
+        static_cast<double>(blob.y_strip)
+        + 0.5
+        - 0.5 * static_cast<double>(fNstripsV)
+    )
+    * fVStripPitch
+    + fVStripOffset;
+
+
+  // double pos_maxstripu = ( ucluster.istripmax + 0.5 - 0.5 * static_cast<double>(fNstripsU) ) * fUStripPitch + fUStripOffset;
+  // double pos_maxstripv = ( vcluster.istripmax + 0.5 - 0.5 * static_cast<double>(fNstripsV) ) * fVStripPitch + fVStripOffset;
+
+  // //"Cluster moments" defined as differences between reconstructed hit position and center of strip with max. signal in the cluster:
+	// hittemp.umom = (hittemp.uhit - pos_maxstripu)/fUStripPitch;
+	// hittemp.vmom = (hittemp.vhit - pos_maxstripv)/fVStripPitch;
+
+
+
+  // ============================================================
+// ML hit-position reconstruction mode
+//
+// false:
+//   Use the physical center of the strip selected by the ML
+//   postprocessor.
+//
+// true:
+//   Use the same ADC-weighted cluster position reconstruction
+//   used by conventional SBS GEM reconstruction.
+// ============================================================
+
+// constexpr bool ML_USE_ADC_AVERAGED_HIT_POSITION = true;
+
+
+// if( ML_USE_ADC_AVERAGED_HIT_POSITION ){
+
+//     hittemp.uhit =
+//         ucluster.hitpos_mean;
+
+//     hittemp.vhit =
+//         vcluster.hitpos_mean;
+
+// } else {
+
+//     // Original ML-selected strip-center position.
+
+//     if(
+//         blob.x_strip < 0 ||
+//         blob.x_strip >= static_cast<int>(fNstripsU) ||
+//         blob.y_strip < 0 ||
+//         blob.y_strip >= static_cast<int>(fNstripsV)
+//     ){
+//         return false;
+//     }
+
+
+//     hittemp.uhit =
+//         (
+//             static_cast<double>(blob.x_strip)
+//             + 0.5
+//             - 0.5 * static_cast<double>(fNstripsU)
+//         )
+//         * fUStripPitch
+//         + fUStripOffset;
+
+
+//     hittemp.vhit =
+//         (
+//             static_cast<double>(blob.y_strip)
+//             + 0.5
+//             - 0.5 * static_cast<double>(fNstripsV)
+//         )
+//         * fVStripPitch
+//         + fVStripOffset;
+// }
+
+
+
+
+
+
+
+// ADC averaged hit finder - Bhasitha
+// ============================================================
+// ML hit-position reconstruction mode
+//
+// false:
+//   Use the physical center of the strip selected by the ML
+//   postprocessor.
+//
+// true:
+//   Use the same ADC-weighted cluster position reconstruction
+//   used by conventional SBS GEM reconstruction.
+// ============================================================
+
+constexpr bool ML_USE_ADC_AVERAGED_HIT_POSITION = true;
+
+
+if( ML_USE_ADC_AVERAGED_HIT_POSITION ){
+
+    hittemp.uhit =
+        ucluster.hitpos_mean;
+
+    hittemp.vhit =
+        vcluster.hitpos_mean;
+
+} else {
+
+    // Original ML-selected strip-center position.
+
+    if(
+        blob.x_strip < 0 ||
+        blob.x_strip >= static_cast<int>(fNstripsU) ||
+        blob.y_strip < 0 ||
+        blob.y_strip >= static_cast<int>(fNstripsV)
+    ){
+        return false;
+    }
+
+
+    hittemp.uhit =
+        (
+            static_cast<double>(blob.x_strip)
+            + 0.5
+            - 0.5 * static_cast<double>(fNstripsU)
+        )
+        * fUStripPitch
+        + fUStripOffset;
+
+
+    hittemp.vhit =
+        (
+            static_cast<double>(blob.y_strip)
+            + 0.5
+            - 0.5 * static_cast<double>(fNstripsV)
+        )
+        * fVStripPitch
+        + fVStripOffset;
+}
+
+
+
+  // ============================================================
+  // Cluster moments
+  //
+  // Calculate AFTER choosing the final reconstructed U/V position.
+  // This is important when ADC-averaged hit positions are enabled.
+  // ============================================================
+
+  double pos_maxstripu =
+      (
+          static_cast<double>(ucluster.istripmax)
+          + 0.5
+          - 0.5 * static_cast<double>(fNstripsU)
+      )
+      * fUStripPitch
+      + fUStripOffset;
+
+  double pos_maxstripv =
+      (
+          static_cast<double>(vcluster.istripmax)
+          + 0.5
+          - 0.5 * static_cast<double>(fNstripsV)
+      )
+      * fVStripPitch
+      + fVStripOffset;
+
+
+  // "Cluster moments" = difference between reconstructed hit
+  // position and center of the representative/max strip,
+  // expressed in strip-pitch units.
+
+  hittemp.umom =
+      (hittemp.uhit - pos_maxstripu)
+      / fUStripPitch;
+
+  hittemp.vmom =
+      (hittemp.vhit - pos_maxstripv)
+      / fVStripPitch;
+
+
+      
+
+  TVector2 UVtemp(hittemp.uhit,hittemp.vhit);
+	TVector2 XYtemp = UVtoXY( UVtemp );
+
+  hittemp.xhit = XYtemp.X();
+  hittemp.yhit = XYtemp.Y();
+
+  if( IsInActiveArea( hittemp.xhit, hittemp.yhit ) ){
+	  bool passed_any_constraint = false;
+	  for( int icp=0; icp<fxcmin.size(); icp++ ){
+	    if( fxcmin[icp] <= hittemp.xhit && hittemp.xhit <= fxcmax[icp] &&
+	      	fycmin[icp] <= hittemp.yhit && hittemp.yhit <= fycmax[icp] ){
+	        passed_any_constraint = true;	    
+	    }
+	  }
+
+    if ( passed_any_constraint || fxcmin.size() ==0 ){
+    // TEMPORARY HISTORICAL-EVALUATION PARITY TEST:
+    // Do not reject an ML prediction using the individual X/Y
+    // constraint rectangles after inference.
+    // if ( true ){
+
+      hittemp.thit = 0.5 * ( ucluster.t_mean + vcluster.t_mean );
+      hittemp.Ehit = 0.5 * ( ucluster.clusterADCsum + vcluster.clusterADCsum );
+      
+      hittemp.thitcorr = hittemp.thit;
+
+      TVector3 hitpose_global = DetToTrackCoord( hittemp.xhit, hittemp.yhit );
+
+      hittemp.xghit = hitpose_global.X();
+      hittemp.yghit = hitpose_global.Y();
+      hittemp.zghit = hitpose_global.Z();
+
+      hittemp.ADCasym = ( ucluster.clusterADCsum - vcluster.clusterADCsum ) / ( ucluster.clusterADCsum + vcluster.clusterADCsum );
+      
+      hittemp.ADCasymDeconv = ( ucluster.clusterADCsumDeconv - vcluster.clusterADCsumDeconv ) / ( ucluster.clusterADCsumDeconvMaxCombo + vcluster.clusterADCsumDeconvMaxCombo );
+      hittemp.EhitDeconv = 0.5*(  ucluster.clusterADCsumDeconvMaxCombo + vcluster.clusterADCsumDeconvMaxCombo );
+      
+      hittemp.tdiff = ucluster.t_mean - vcluster.t_mean - (fHitTimeMean[0] - fHitTimeMean[1]);
+      hittemp.tdiffDeconv = ucluster.t_mean_deconv - vcluster.t_mean_deconv - (fHitTimeMeanDeconv[0] - fHitTimeMeanDeconv[1]);
+      hittemp.thitDeconv = 0.5 * ( ucluster.t_mean_deconv + vcluster.t_mean_deconv );
+
+      // Calculate the correlation coefficient between the U and V cluster ADC samples.
+      hittemp.corrcoeff_clust = CorrCoeff( nsamp_corr, ucluster.ADCsamples, vcluster.ADCsamples, firstsamp_corr );
+
+      UInt_t ustripidx = ucluster.istripmax - ucluster.istriplo;
+      UInt_t vstripidx = vcluster.istripmax - vcluster.istriplo;
+
+      UInt_t uhitidx = ucluster.hitindex[ustripidx];
+      UInt_t vhitidx = vcluster.hitindex[vstripidx];
+
+// // ============================================================
+// // Find the decoded-hit index corresponding to the actual
+// // physical strip carrying the maximum ADC.
+// //
+// // IMPORTANT:
+// // ML clusters are not required to contain consecutive physical
+// // strip IDs, so:
+// //
+// //   istripmax - istriplo
+// //
+// // is NOT a valid index into hitindex.
+// // ============================================================
+
+// UInt_t uhitidx = 0;
+// UInt_t vhitidx = 0;
+
+// bool found_u_max = false;
+// bool found_v_max = false;
+
+
+// for( const UInt_t ihit : ucluster.hitindex ){
+
+//     if(
+//         ihit < static_cast<UInt_t>(fNstrips_hit) &&
+//         fStrip[ihit] == ucluster.istripmax
+//     ){
+//         uhitidx = ihit;
+//         found_u_max = true;
+//         break;
+//     }
+// }
+
+
+// for( const UInt_t ihit : vcluster.hitindex ){
+
+//     if(
+//         ihit < static_cast<UInt_t>(fNstrips_hit) &&
+//         fStrip[ihit] == vcluster.istripmax
+//     ){
+//         vhitidx = ihit;
+//         found_v_max = true;
+//         break;
+//     }
+// }
+
+
+// if( !found_u_max || !found_v_max ){
+//     return false;
+// }
+
+
+      hittemp.corrcoeff_strip = CorrCoeff( nsamp_corr, fADCsamples[uhitidx], fADCsamples[vhitidx], firstsamp_corr );
+
+      hittemp.corrcoeff_clust_deconv = CorrCoeff( nsamp_corr, ucluster.DeconvADCsamples, vcluster.DeconvADCsamples );
+      hittemp.corrcoeff_strip_deconv = CorrCoeff( nsamp_corr, fADCsamples_deconv[uhitidx], fADCsamples_deconv[vhitidx] );
+
+      hittemp.thitFit = 0.5 * ( ucluster.t_mean_fit + vcluster.t_mean_fit );
+      hittemp.tdiffFit = ucluster.t_mean_fit - vcluster.t_mean_fit - (fHitTimeMeanFit[0] - fHitTimeMeanFit[1]);
+
+      double asym = hittemp.ADCasym;
+	    double ccor = hittemp.corrcoeff_clust;
+	    double ADCsum = hittemp.Ehit;
+	    double deltat = hittemp.tdiff;
+	    double thit = hittemp.thit;
+	    double ADC_thresh = fThresholdClusterSum;
+	    double ccor_cut = fCorrCoeffCut;
+	    //Do we want to hard-code the number of sigmas in the "high-quality" designation?
+	    // --> Yes: if we want to make it wider or narrower, we can adjust the sigma
+	    // or the cut value in the database. 
+	    // Go with the larger of 3.5sigma or cut from DB
+	    double dtcut = std::max( 3.5 * fTimeCutUVsigma, fTimeCutUVdiff );
+	    double t0 = 0.5*(fHitTimeMean[0]+fHitTimeMean[1]);
+	    double tcut = 3.5*0.5*(fHitTimeSigma[0]+fHitTimeSigma[1]);
+	  
+	  
+	    if( fClusteringFlag == 1 ){
+	      asym = hittemp.ADCasymDeconv;
+	      ccor = hittemp.corrcoeff_clust_deconv;
+	      ADCsum = hittemp.EhitDeconv;
+	      deltat = hittemp.tdiffDeconv;
+	      thit = hittemp.thitDeconv;
+	      ADC_thresh = fThresholdClusterSumDeconv;
+	      ccor_cut = fCorrCoeffCutDeconv;
+	      dtcut = std::max( 3.5*fTimeCutUVsigmaDeconv, fTimeCutUVdiffDeconv );
+	      t0 = 0.5*(fHitTimeMeanDeconv[0]+fHitTimeMeanDeconv[1]);
+	      tcut = 3.5*0.5*(fHitTimeSigmaDeconv[0]+fHitTimeSigmaDeconv[1]);
+	    }
+
+	    if( fClusteringFlag == 0 && fUseStripTimingCuts == 2 ){
+	      thit = hittemp.thitFit;
+	      t0 = 0.5*(fHitTimeMeanFit[0]+fHitTimeMeanFit[1]);
+	      dtcut = std::max( 3.5*fTimeCutUVsigmaFit, fTimeCutUVdiffFit );
+	      tcut = 3.5*0.5*(fHitTimeSigmaFit[0]+fHitTimeSigmaFit[1]);
+	    }
+
+	    double asymcut = std::max( 4.5*fADCasymSigma, fADCasymCut );
+	  
+      // Let's keep the ML hits as high-quality for now.
+	    // hittemp.highquality = fabs(asym) <= asymcut &&
+	    //   fUclusters[iu].nstrips > 1 && fVclusters[iv].nstrips > 1 &&
+	    //   ADCsum >= ADC_thresh && ccor >= ccor_cut &&
+	    //   fabs(deltat)<=dtcut && fabs(thit-t0)<=tcut;
+
+	    hittemp.thitcorr = thit - t0;
+      
+      fN2Dhits++;
+      return true;
+    }
+    else{
+      hittemp.keep = false;
+      hittemp.highquality = false;
+      return false;
+    }
+  }
+  else{
+    hittemp.keep = false;
+    hittemp.highquality = false;
+    return false;
+  }
+
+  // hittemp.x = ( ucluster.hitpos_mean + vcluster.hitpos_mean ) / 2.0;
+  // hittemp.y = ( ucluster.hitpos_mean - vcluster.hitpos_mean ) / 2.0;
+
+  // hittemp.t_mean = ( ucluster.t_mean + vcluster.t_mean ) / 2.0;
+  // hittemp.t_sigma = std::sqrt( std::pow(ucluster.t_sigma,2) + std::pow(vcluster.t_sigma,2) );
+
+  // hittemp.t_mean_deconv = ( ucluster.t_mean_deconv + vcluster.t_mean_deconv ) / 2.0;
+
+  // hittemp.clusterADCsum = ucluster.clusterADCsum + vcluster.clusterADCsum;
+
+  // hittemp.clusterADCsumDeconv = ucluster.clusterADCsumDeconv + vcluster.clusterADCsumDeconv;
+
+  // hittemp.isneg = false;
+  // hittemp.isnegontrack = false;
+  
+  // // Check that the reconstructed X/Y position is inside the active area and at least one of the defined X/Y ROIs.
+  // hittemp.inside_active_area = IsInActiveArea( hittemp.x, hittemp.y );
+
+  // hittemp.inside_roi = false;
+  // hittemp.roi_index = -1;
+
+  // if( hittemp.inside_active_area ){
+
+  //   for( std::size_t ic = 0; ic < fxcmin.size(); ic++ ){
+
+  //     if(
+  //       fxcmin[ic] <= hittemp.x &&
+  //       hittemp.x <= fxcmax[ic] &&
+  //       fycmin[ic] <= hittemp.y &&
+  //       hittemp.y <= fycmax[ic]
+  //     ){
+
+  //       hittemp.inside_roi = true;
+
+  //       hittemp.roi_index =
+  //         static_cast<int>(ic);
+
+  //       break;
+  //     }
   //   }
   // }
-  //Start with 1D clustering; if the constraint array for this module has EXACTLY one point and the store all clusters flag is
-  // NOT set, do the clustering with constraints! Otherwise do it without constraints!
 
-  // if( fxcmin.size() >= 1 && !fStoreAll1Dclusters ){ 
+  // // Final acceptance for this stage.
+  // return hittemp.inside_active_area && hittemp.inside_roi;
+}
 
-  //   double xcenter = 0.5*(fxcmin[0]+fxcmax[0]);
-  //   double xwidth = 0.5*(fxcmax[0]-fxcmin[0]);
-  //   double ycenter = 0.5*(fycmin[0]+fycmax[0]);
-  //   double ywidth = 0.5*(fycmax[0]-fycmin[0]);
 
-  //   double ucenter = xcenter * fPxU + ycenter * fPyU;
-  //   double vcenter = xcenter * fPxV + ycenter * fPyV;
+bool SBSGEMModule::Make1DClustersAnd2DHitsFromMLblobs( const std::vector<SBSGEMMLBlob>& blobs ){
 
-  //   double umin,umax,vmin,vmax;
+  fUclusters.clear();
+  fVclusters.clear();
+  fHits.clear();
 
-  //   double xmin = fxcmin[0];
-  //   double xmax = fxcmax[0];
-  //   double ymin = fycmin[0];
-  //   double ymax = fycmax[0];
+  // The following should already be 0 but setting them to 0 to be explicit.
+  fNclustU = 0;
+  fNclustV = 0;
+  fN2Dhits = 0;
+  fN2Dhits_total = 0;
+
+  for( const auto& blob : blobs ){
+
+    sbsgemcluster_t uclustertemp{};
+    sbsgemcluster_t vclustertemp{};
+
+auto contiguous_run_containing =
+    []( const std::vector<int>& input, int selected_strip )
+    -> std::vector<int>
+{
+    if( input.empty() ){
+        return {};
+    }
+
+    // Sort and remove duplicates defensively.
+    std::vector<int> strips = input;
+
+    std::sort(
+        strips.begin(),
+        strips.end()
+    );
+
+    strips.erase(
+        std::unique(
+            strips.begin(),
+            strips.end()
+        ),
+        strips.end()
+    );
+
+    // Find the ML-selected strip.
+    auto it = std::find(
+        strips.begin(),
+        strips.end(),
+        selected_strip
+    );
+
+    if( it == strips.end() ){
+        return {};
+    }
+
+    const std::size_t center =
+        static_cast<std::size_t>(
+            std::distance(
+                strips.begin(),
+                it
+            )
+        );
+
+    std::size_t lo = center;
+    std::size_t hi = center;
+
+    // Extend downward while physical strips are consecutive.
+    while(
+        lo > 0 &&
+        strips[lo] == strips[lo - 1] + 1
+    ){
+        --lo;
+    }
+
+    // Extend upward while physical strips are consecutive.
+    while(
+        hi + 1 < strips.size() &&
+        strips[hi + 1] == strips[hi] + 1
+    ){
+        ++hi;
+    }
+
+    return std::vector<int>(
+        strips.begin() + lo,
+        strips.begin() + hi + 1
+    );
+};
+
+    // if( !make_cluster_1D_ML( blob.u_strips, SBSGEM::kUaxis, uclustertemp ) ) continue;
     
-  //   //check the four corners of the rectangle and compute the maximum values of u and v occuring at the four corners of the rectangular region:
-  //   // NOTE: we will ALSO enforce the 2D search region in X and Y when we combine 1D U/V clusters into 2D X/Y hits, which, depending on the U/V strip orientation
-  //   // can exclude some 2D hits that would have passed the U/V constraints defined by the corners of the X/Y rectangle, but been outside the X/Y constraint rectangle
+    // if( !make_cluster_1D_ML( blob.v_strips, SBSGEM::kVaxis, vclustertemp ) ) continue;
+// ============================================================
+// Convert the ML blob support into physically contiguous
+// SBS 1D clusters.
+//
+// IMPORTANT:
+//
+// The ML image may contain a connected component whose mapped
+// physical strip IDs are not all consecutive.
+//
+// sbsgemcluster_t, however, assumes:
+//
+//   istriplo ... istriphi
+//
+// is a dense physical-strip interval.
+//
+// Therefore use the contiguous physical run containing the
+// actual strip selected by ML postprocessing.
+// ============================================================
 
-  //   double u00 = xmin * fPxU + ymin * fPyU;
-  //   double u01 = xmin * fPxU + ymax * fPyU;
-  //   double u10 = xmax * fPxU + ymin * fPyU;
-  //   double u11 = xmax * fPxU + ymax * fPyU;
+const std::vector<int> u_strips_contiguous =
+    contiguous_run_containing(
+        blob.u_strips,
+        blob.x_strip
+    );
 
-  //   //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:
-  //   umin = std::min( u00, std::min(u01, std::min(u10, u11) ) );
-  //   umax = std::max( u00, std::max(u01, std::max(u10, u11) ) );
+const std::vector<int> v_strips_contiguous =
+    contiguous_run_containing(
+        blob.v_strips,
+        blob.y_strip
+    );
 
-  //   double v00 = xmin * fPxV + ymin * fPyV;
-  //   double v01 = xmin * fPxV + ymax * fPyV;
-  //   double v10 = xmax * fPxV + ymin * fPyV;
-  //   double v11 = xmax * fPxV + ymax * fPyV;
-  
-  //   vmin = std::min( v00, std::min(v01, std::min(v10, v11) ) );
-  //   vmax = std::max( v00, std::max(v01, std::max(v10, v11) ) );
 
-  //   find_clusters_1D(SBSGEM::kUaxis, ucenter, 0.5*(umax-umin) ); //u strips
-  //   find_clusters_1D(SBSGEM::kVaxis, vcenter, 0.5*(vmax-vmin) ); //v strips
-  if( fxcmin.size() >= 1 ){
+// ML-selected strip must actually belong to the corresponding
+// blob support.
+if(
+    u_strips_contiguous.empty() ||
+    v_strips_contiguous.empty()
+){
+    continue;
+}
 
-    double xmin = 10000000, xmax = -10000000, ymin = 10000000, ymax = -10000000; // Define bounds that are sure to be overriden.
-    double umin = 10000000, umax = -10000000, vmin = 10000000, vmax = -10000000; 
 
-    // Let us loop through all the contraint points and find the above.
-    for ( int icp = 0; icp < fxcmin.size(); icp++  ){
+if(
+    !make_cluster_1D_ML(
+        u_strips_contiguous,
+        SBSGEM::kUaxis,
+        uclustertemp
+    )
+){
+    continue;
+}
 
-      double xmin_icp = fxcmin[icp];
-      double xmax_icp = fxcmax[icp];
-      double ymin_icp = fycmin[icp];
-      double ymax_icp = fycmax[icp];
+
+if(
+    !make_cluster_1D_ML(
+        v_strips_contiguous,
+        SBSGEM::kVaxis,
+        vclustertemp
+    )
+){
+    continue;
+}
+
+// ============================================================
+// For ML hits, preserve the strip actually selected by the
+// ML postprocessor as the representative strip.
+//
+// This is important for the historical strip-based evaluator,
+// which accesses the reconstructed strip through the cluster
+// referenced by the 2D hit.
+// ============================================================
+
+uclustertemp.istripmax =
+    static_cast<UInt_t>(blob.x_strip);
+
+vclustertemp.istripmax =
+    static_cast<UInt_t>(blob.y_strip);
+
+
+    const UInt_t iu = fUclusters.size();
+    const UInt_t iv = fVclusters.size();
+
+    fUclusters.push_back(uclustertemp);
+    fVclusters.push_back(vclustertemp);
+
+    sbsgemhit_t hittemp{};
+
+    if( !make_2Dhit_ML( iu, iv, blob, hittemp ) ){
+      // Remove clusters if rejected, or postpone insertion
+      // until after geometry validation.
+      fUclusters.pop_back();
+      fVclusters.pop_back();
+      continue;
+    }
+
+    fHits.push_back(hittemp);
+  }
+
+  fNclustU = fUclusters.size();
+  fNclustV = fVclusters.size();
+  fNclustU_pos = fNclustU;
+  fNclustV_pos = fNclustV;
+  fN2Dhits = fHits.size();
+  fN2Dhits_total = fN2Dhits;
+
+  fClustering1DIsDone = true;
+
+  if ( fN2Dhits_total > 0 ) return true;
+  else return false;  
+}
+
+
+
+void SBSGEMModule::find_2Dhits(){
+
+  // ============================================================
+  // Determine whether this event actually has a usable
+  // constraint/ROI definition.
+  //
+  // IMPORTANT:
+  // SBSOffline legitimately allows fxcmin.size()==0.
+  // In that case there is NO ROI restriction and the conventional
+  // reconstruction should run wide-open.
+  //
+  // The ML model, however, requires the event ROI used during its
+  // historical evaluation/input construction. Therefore ML should
+  // only run when a real, internally consistent constraint set
+  // exists.
+  // ============================================================
+
+  const bool has_valid_constraints =
+      !fxcmin.empty() &&
+      fxcmin.size() == fxcmax.size() &&
+      fxcmin.size() == fycmin.size() &&
+      fxcmin.size() == fycmax.size();
+
+
+  // ============================================================
+  // Reset event-local ROI quantities.
+  //
+  // Never allow values from the previous event, or the temporary
+  // +/-1e7 calculation sentinels, to masquerade as a real ROI.
+  // ============================================================
+
+  fIsROIinMod = false;
+
+  fStripUc_min = -1;
+  fStripUc_max = -1;
+  fStripVc_min = -1;
+  fStripVc_max = -1;
+
+  fROI_xmin = 0.0;
+  fROI_xmax = 0.0;
+  fROI_ymin = 0.0;
+  fROI_ymax = 0.0;
+
+
+  // These variables are also used later by the conventional
+  // constrained-clustering path, so keep them in function scope.
+  double xmin = 0.0;
+  double xmax = 0.0;
+  double ymin = 0.0;
+  double ymax = 0.0;
+
+  double umin = 0.0;
+  double umax = 0.0;
+  double vmin = 0.0;
+  double vmax = 0.0;
+
+
+  // ============================================================
+  // Calculate ROI boundaries ONLY when real constraints exist.
+  // ============================================================
+
+  if( has_valid_constraints ){
+
+    // Temporary calculation sentinels are safe here because the
+    // loop is guaranteed to execute at least once.
+    xmin =  10000000.0;
+    xmax = -10000000.0;
+    ymin =  10000000.0;
+    ymax = -10000000.0;
+
+    umin =  10000000.0;
+    umax = -10000000.0;
+    vmin =  10000000.0;
+    vmax = -10000000.0;
+
+
+    for( std::size_t icp = 0; icp < fxcmin.size(); ++icp ){
+
+      const double xmin_icp = fxcmin[icp];
+      const double xmax_icp = fxcmax[icp];
+      const double ymin_icp = fycmin[icp];
+      const double ymax_icp = fycmax[icp];
+
+
+      // --------------------------------------------------------
+      // Global X/Y envelope
+      // --------------------------------------------------------
 
       xmin = std::min( xmin, xmin_icp );
       xmax = std::max( xmax, xmax_icp );
       ymin = std::min( ymin, ymin_icp );
       ymax = std::max( ymax, ymax_icp );
 
-      double u00 = xmin_icp * fPxU + ymin_icp * fPyU;
-      double u01 = xmin_icp * fPxU + ymax_icp * fPyU;
-      double u10 = xmax_icp * fPxU + ymin_icp * fPyU;
-      double u11 = xmax_icp * fPxU + ymax_icp * fPyU;
 
-      //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:      
-      umin = std::min( umin, std::min( u00, std::min(u01, std::min(u10, u11) ) ) );
-      umax = std::max( umax, std::max( u00, std::max(u01, std::max(u10, u11) ) ) );
+      // --------------------------------------------------------
+      // Project each X/Y constraint rectangle to U.
+      // --------------------------------------------------------
 
-      double v00 = xmin_icp * fPxV + ymin_icp * fPyV;
-      double v01 = xmin_icp * fPxV + ymax_icp * fPyV;
-      double v10 = xmax_icp * fPxV + ymin_icp * fPyV;
-      double v11 = xmax_icp * fPxV + ymax_icp * fPyV;
+      const double u00 =
+          xmin_icp * fPxU + ymin_icp * fPyU;
 
-      vmin = std::min( vmin, std::min( v00, std::min(v01, std::min(v10, v11) ) ) );
-      vmax = std::max( vmax, std::max( v00, std::max(v01, std::max(v10, v11) ) ) );
+      const double u01 =
+          xmin_icp * fPxU + ymax_icp * fPyU;
+
+      const double u10 =
+          xmax_icp * fPxU + ymin_icp * fPyU;
+
+      const double u11 =
+          xmax_icp * fPxU + ymax_icp * fPyU;
+
+
+      umin =
+          std::min(
+              umin,
+              std::min(
+                  u00,
+                  std::min(
+                      u01,
+                      std::min(u10,u11)
+                  )
+              )
+          );
+
+      umax =
+          std::max(
+              umax,
+              std::max(
+                  u00,
+                  std::max(
+                      u01,
+                      std::max(u10,u11)
+                  )
+              )
+          );
+
+
+      // --------------------------------------------------------
+      // Project each X/Y constraint rectangle to V.
+      // --------------------------------------------------------
+
+      const double v00 =
+          xmin_icp * fPxV + ymin_icp * fPyV;
+
+      const double v01 =
+          xmin_icp * fPxV + ymax_icp * fPyV;
+
+      const double v10 =
+          xmax_icp * fPxV + ymin_icp * fPyV;
+
+      const double v11 =
+          xmax_icp * fPxV + ymax_icp * fPyV;
+
+
+      vmin =
+          std::min(
+              vmin,
+              std::min(
+                  v00,
+                  std::min(
+                      v01,
+                      std::min(v10,v11)
+                  )
+              )
+          );
+
+      vmax =
+          std::max(
+              vmax,
+              std::max(
+                  v00,
+                  std::max(
+                      v01,
+                      std::max(v10,v11)
+                  )
+              )
+          );
     }
+
+
+    // ==========================================================
+    // Store X/Y ROI envelope.
+    // ==========================================================
 
     fROI_xmin = xmin;
     fROI_xmax = xmax;
     fROI_ymin = ymin;
     fROI_ymax = ymax;
 
-    //std::cout << "ROI strip, xmin : xmax : ymin : ymax =                             " << xmin << " : "  << xmax << " : " << ymin << " : " << ymax << std::endl;
 
-    // What strip numbers does these min and max values correspond to? 
-    // Main use case is for ML model training.
-    fStripUc_min = GetStripNumberFromPos(umin, SBSGEM::kUaxis);
-    fStripUc_max = GetStripNumberFromPos(umax, SBSGEM::kUaxis);
-    fStripVc_min = GetStripNumberFromPos(vmin, SBSGEM::kVaxis);
-    fStripVc_max = GetStripNumberFromPos(vmax, SBSGEM::kVaxis);
+    // ==========================================================
+    // Convert physical U/V limits into strip-number limits.
+    //
+    // IMPORTANT:
+    // This is now executed ONLY after at least one real
+    // constraint rectangle was processed.
+    // ==========================================================
 
-    if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; // NO overlap of ROI with the module.
-    else{     
-     fIsROIinMod = true;
-     // Clamp the min and max strips to 0 and fNstrips<U/V>, respectively, if they are out-of-bounds.
-     if ( fStripUc_min < 0 )          fStripUc_min = 0;
-     if ( fStripUc_max >= fNstripsU ) fStripUc_max = fNstripsU - 1;
-     if ( fStripVc_min < 0 )          fStripVc_min = 0;
-     if ( fStripVc_max >= fNstripsV ) fStripVc_max = fNstripsV - 1;
-   }    
+    fStripUc_min =
+        GetStripNumberFromPos(
+            umin,
+            SBSGEM::kUaxis
+        );
 
-    //std::cout << "ROI strip, umin : umax : vmin : vmax : IN/OUT? =                   " << umin << " : "  << umax << " : " << vmin << " : " << vmax << " : " << fIsROIinMod << std::endl;
-    //std::cout << "ROI strip, istrip_umin : istrip_umax : istrip_vmin : istrip_vmax = " << fStripUc_min << " : " << fStripUc_max << " : " << fStripVc_min << " : " << fStripVc_max << std::endl << std::endl;   
+    fStripUc_max =
+        GetStripNumberFromPos(
+            umax,
+            SBSGEM::kUaxis
+        );
 
-    double ucenter = 0.5*(umin + umax);
-    double vcenter = 0.5*(vmin + vmax);
-    
-    find_clusters_1D(SBSGEM::kUaxis, ucenter, 0.5*(umax-umin) ); //u strips
-    find_clusters_1D(SBSGEM::kVaxis, vcenter, 0.5*(vmax-vmin) ); //v strips
-  } else { //use the default wide-open limits!
-    // std::cout << "Calling 1D cluster finding with storage of ALL 1D clusters, num. constraints = "
-    // 	      << fxcmin.size() << std::endl;
-    find_clusters_1D(SBSGEM::kUaxis);
-    find_clusters_1D(SBSGEM::kVaxis);
+    fStripVc_min =
+        GetStripNumberFromPos(
+            vmin,
+            SBSGEM::kVaxis
+        );
+
+    fStripVc_max =
+        GetStripNumberFromPos(
+            vmax,
+            SBSGEM::kVaxis
+        );
+
+
+    // ==========================================================
+    // Check whether this ROI actually overlaps the module.
+    // ==========================================================
+
+    if(
+        fStripUc_min >= static_cast<int>(fNstripsU) ||
+        fStripUc_max < 0 ||
+        fStripVc_min >= static_cast<int>(fNstripsV) ||
+        fStripVc_max < 0
+    ){
+      fIsROIinMod = false;
+
+    } else {
+
+      fIsROIinMod = true;
+
+
+      // Clamp partially overlapping ROI to physical module.
+      if( fStripUc_min < 0 )
+        fStripUc_min = 0;
+
+      if( fStripUc_max >= static_cast<int>(fNstripsU) )
+        fStripUc_max = fNstripsU - 1;
+
+      if( fStripVc_min < 0 )
+        fStripVc_min = 0;
+
+      if( fStripVc_max >= static_cast<int>(fNstripsV) )
+        fStripVc_max = fNstripsV - 1;
+    }
   }
 
-  // std::cout << "After 1D cluster-finding, (fNclustU,fNclustV)=("
-  // 	    << fNclustU << ", " << fNclustV << ")" << std::endl;
-  
-  //Now make 2D clusters:
 
-  if( fNclustU > 0 && fNclustV > 0 ){
+  // ============================================================
+  // Decide whether ML is applicable to THIS EVENT.
+  //
+  // ML requires:
+  //   1. ML enabled
+  //   2. model initialized
+  //   3. valid constraint vectors
+  //   4. ROI actually overlaps this module
+  //
+  // With fxcmin.size()==0, do_ML_hit_finding becomes false.
+  // The existing conventional code below will therefore execute
+  // its normal wide-open reconstruction.
+  // ============================================================
 
-    fUGoodClustersIndex.clear();
-    fVGoodClustersIndex.clear();
+  const bool do_ML_hit_finding =
+      fUseMLHitFinder &&
+      fMLHitFinderInitialized &&
+      fMLHitFinder &&
+      has_valid_constraints &&
+      fIsROIinMod;
 
-    for ( int iclus = 0; iclus < fNclustU; iclus++ ){      
-      if ( fUclusters[iclus].keep == true ) fUGoodClustersIndex.push_back( iclus );
+  bool success_ML_hit_finding = false;
+    
+  if( do_ML_hit_finding ){
+
+    // ============================================================
+    // ML PERFORMANCE TIMING #TIMING Bhasitha
+    // ============================================================
+
+    using MLClock = std::chrono::steady_clock;
+
+    const auto ml_branch_t0 = MLClock::now();
+
+    double ml_roi_ms        = -1.0;
+    double ml_preprocess_ms = -1.0;
+    double ml_inference_ms  = -1.0;
+    double ml_postprocess_ms = -1.0;
+    double ml_hitbuild_ms   = -1.0;
+
+    bool timing_roi_ok = false;
+    bool timing_build_ok = false;
+    bool timing_inference_ok = false;
+    bool timing_postprocess_ok = false;
+
+    std::size_t timing_nU = 0;
+    std::size_t timing_nV = 0;
+    std::size_t timing_H = 0;
+    std::size_t timing_W = 0;
+    std::size_t timing_nblobs = 0;
+
+
+
+
+
+
+
+
+
+    // ============================================================
+    // TEMPORARY ML DIAGNOSTIC EXPORT
+    //
+    // This is intentionally READ-ONLY diagnostics.
+    //
+    // It does NOT alter:
+    //   - decoded strips
+    //   - ROI selection
+    //   - preprocessing
+    //   - inference
+    //   - postprocessing
+    //   - SBS hit construction
+    //
+    // Only dump gemFT.m0.
+    // ============================================================
+
+    const bool dump_this_module =
+      std::string(GetParent()->GetName()) == "gemFT" &&
+      std::string(GetName()) == "m0";
+
+
+    const std::string dump_dir =
+      "/work/halla/sbs/bhasitha/Tracking_ML/GEMDecoder_ML/"
+      "EVAL_DEBUG/SBS_STAGE_DUMP";
+
+
+    static std::ofstream stage0_file(
+      dump_dir + "/sbs_ml_stage0_all_decoded.txt",
+      std::ios::out
+    );
+
+    static std::ofstream replay_file(
+      dump_dir + "/sbs_ml_replay_input.txt",
+      std::ios::out
+    );
+
+    static std::ofstream truth_file(
+      dump_dir + "/sbs_ml_truth.txt",
+      std::ios::out
+    );
+
+    static std::ofstream constraint_file(
+      dump_dir + "/sbs_ml_constraints.txt",
+      std::ios::out
+    );
+
+static std::ofstream roi_bounds_file(
+  dump_dir + "/sbs_ml_roi_bounds.txt",
+  std::ios::out
+);
+
+static std::ofstream preml_combined_file(
+  dump_dir + "/sbs_ml_preprocessor_input_with_goodadc.txt",
+  std::ios::out
+);
+
+    // ------------------------------------------------------------
+    // Headers:
+    //
+    // replay_file and truth_file intentionally have NO HEADER.
+    // This makes them directly compatible with the old Python code.
+    // ------------------------------------------------------------
+
+    static bool diagnostic_headers_written = false;
+
+    if( dump_this_module && !diagnostic_headers_written ){
+
+      stage0_file
+        << "event_id decoded_index module_id strip_id "
+        << "adc0 adc1 adc2 adc3 adc4 adc5 "
+        << "keep adc_sum adc_max\n";
+
+
+      constraint_file
+        << "event_id constraint_id "
+        << "xmin xmax ymin ymax\n";
+
+roi_bounds_file
+  << "event_id roi_inmod "
+  << "umin umax vmin vmax\n";
+
+      diagnostic_headers_written = true;
     }
-    for ( int iclus = 0; iclus < fNclustV; iclus++ ){
-     if ( fVclusters[iclus].keep == true ) fVGoodClustersIndex.push_back( iclus );
+
+
+    static bool diagnostic_file_check_done = false;
+    static bool diagnostic_files_ok = true;
+
+    if( dump_this_module && !diagnostic_file_check_done ){
+
+      diagnostic_files_ok =
+        stage0_file.is_open() &&
+        replay_file.is_open() &&
+        truth_file.is_open() &&
+        constraint_file.is_open() &&
+        roi_bounds_file.is_open() &&
+        preml_combined_file.is_open();
+
+
+      if( !diagnostic_files_ok ){
+
+        std::cerr
+          << "[ML DIAGNOSTIC] ERROR: could not open one or more "
+          << "diagnostic output files in "
+          << dump_dir
+          << std::endl;
+      }
+
+      diagnostic_file_check_done = true;
+    }
+
+
+    // ============================================================
+    // Determine SBS event number.
+    //
+    // fStripEvent[i] was filled in Decode() using:
+    //
+    //     evdata.GetEvNum()
+    //
+    // Every decoded strip in one event should therefore contain
+    // the same event number.
+    // ============================================================
+
+    Long64_t ml_event_id = -1;
+
+    if( fNstrips_hit > 0 ){
+
+      ml_event_id =
+        static_cast<Long64_t>(
+          fStripEvent[0]
+        );
+    }
+
+// ============================================================
+// Dump the FINAL calculated/clamped SBS ROI strip bounds.
+// ============================================================
+
+if(
+  dump_this_module &&
+  diagnostic_files_ok &&
+  ml_event_id >= 0
+){
+  roi_bounds_file
+    << ml_event_id << " "
+    << static_cast<int>(fIsROIinMod) << " "
+    << fStripUc_min << " "
+    << fStripUc_max << " "
+    << fStripVc_min << " "
+    << fStripVc_max << "\n";
+}
+    // ============================================================
+    // STAGE 0A:
+    //
+    // Dump ALL regular decoded strips BEFORE ML ROI selection.
+    //
+    // These are exactly the SBSOffline processed ADC waveforms
+    // available to CollectMLROIStrips().
+    // ============================================================
+
+    if(
+      dump_this_module &&
+      diagnostic_files_ok &&
+      ml_event_id >= 0
+    ){
+
+      stage0_file
+        << std::setprecision(
+             std::numeric_limits<double>::max_digits10
+           );
+
+
+      for(
+        int ihit = 0;
+        ihit < fNstrips_hit;
+        ihit++
+      ){
+
+        if(
+          ihit >= static_cast<int>(fADCsamples.size()) ||
+          fADCsamples[ihit].size() < 6
+        ){
+          continue;
+        }
+
+
+        int module_id = -1;
+
+        if( fStripIsU[ihit] ){
+          module_id = 0;
+        }
+        else if( fStripIsV[ihit] ){
+          module_id = 1;
+        }
+
+
+        stage0_file
+          << ml_event_id
+          << " "
+          << ihit
+          << " "
+          << module_id
+          << " "
+          << fStrip[ihit];
+
+
+        for( int t = 0; t < 6; t++ ){
+
+          stage0_file
+            << " "
+            << fADCsamples[ihit][t];
+        }
+
+
+        stage0_file
+          << " "
+          << static_cast<int>(fKeepStrip[ihit])
+          << " "
+          << fADCsums[ihit]
+          << " "
+          << fADCmax[ihit]
+          << "\n";
+      }
+
+
+      // ==========================================================
+      // ROI constraint rectangles used for THIS event.
+      // ==========================================================
+
+      for(
+        std::size_t ic = 0;
+        ic < fxcmin.size();
+        ic++
+      ){
+
+        constraint_file
+          << std::setprecision(
+               std::numeric_limits<double>::max_digits10
+             )
+          << ml_event_id
+          << " "
+          << ic
+          << " "
+          << fxcmin[ic]
+          << " "
+          << fxcmax[ic]
+          << " "
+          << fycmin[ic]
+          << " "
+          << fycmax[ic]
+          << "\n";
+      }
+
+
+
+
+      // ==========================================================
+      // GOOD-ADC truth.
+      //
+      // Format intentionally matches the existing evaluator:
+      //
+      // event_id module_id strip_id adc0 ... adc5
+      //
+      // module_id:
+      //   0 = U
+      //   1 = V
+      // ==========================================================
+
+      for(
+        int igood = 0;
+        igood < fNstrips_hit_goodADC;
+        igood++
+      ){
+
+        if(
+          igood >= static_cast<int>(fGoodADCsamples.size()) ||
+          fGoodADCsamples[igood].size() < 6
+        ){
+          continue;
+        }
+
+
+        int module_id = -1;
+
+        if( fStripIsU_goodADC[igood] ){
+          module_id = 0;
+        }
+        else if( fStripIsV_goodADC[igood] ){
+          module_id = 1;
+        }
+
+
+        truth_file
+          << ml_event_id
+          << " "
+          << module_id
+          << " "
+          << fStrip_goodADC[igood];
+
+
+        for( int t = 0; t < 6; t++ ){
+
+          truth_file
+            << " "
+            << fGoodADCsamples[igood][t];
+        }
+
+
+        truth_file
+          << "\n";
+      }
+    }
+
+
+    // ============================================================
+    // NOW perform the normal ML ROI collection.
+    //
+    // Nothing above modified any reconstruction quantity.
+    // ============================================================
+
+    std::vector<SBSGEMMLStrip> ml_u_strips;
+    std::vector<SBSGEMMLStrip> ml_v_strips;
+
+
+    const auto ml_roi_t0 = MLClock::now(); // #TIMING Bhasitha
+
+    const bool roi_ok =
+      CollectMLROIStrips(
+        ml_u_strips,
+        ml_v_strips
+      );
+
+    // #TIMING Bhasitha
+    const auto ml_roi_t1 = MLClock::now();
+    ml_roi_ms =
+      std::chrono::duration<double, std::milli>(
+        ml_roi_t1 - ml_roi_t0
+      ).count();
+    timing_roi_ok = roi_ok;
+    timing_nU = ml_u_strips.size();
+    timing_nV = ml_v_strips.size();
+
+
+
+
+static int roi_debug_count = 0;
+
+if(
+  dump_this_module &&
+  roi_debug_count < 20
+){
+
+  std::cout
+    << "[ML ROI DEBUG]"
+    << " event=" << ml_event_id
+    << " U=[" << fStripUc_min
+    << "," << fStripUc_max << "]"
+    << " V=[" << fStripVc_min
+    << "," << fStripVc_max << "]"
+    << " selectedU=" << ml_u_strips.size()
+    << " selectedV=" << ml_v_strips.size()
+    << " roi_ok=" << roi_ok
+    << std::endl;
+
+  roi_debug_count++;
+}
+
+    // ============================================================
+    // STAGE 0B:
+    //
+    // Dump EXACTLY what CollectMLROIStrips() is giving to the
+    // ML preprocessor.
+    //
+    // This file is directly consumable by your old standalone
+    // PyTorch inference script.
+    //
+    // IMPORTANT:
+    // These ADC values are UNNORMALIZED here.
+    //
+    // Python will perform its original global percentile
+    // normalization itself.
+    // ============================================================
+
+    if(
+      roi_ok &&
+      dump_this_module &&
+      diagnostic_files_ok &&
+      ml_event_id >= 0
+    ){
+
+      replay_file
+        << std::setprecision(
+             std::numeric_limits<float>::max_digits10
+           );
+
+
+      // U -> module_id 0
+      for( const auto& strip : ml_u_strips ){
+
+        replay_file
+          << ml_event_id
+          << " "
+          << 0
+          << " "
+          << strip.strip_id;
+
+
+        for( int t = 0; t < 6; t++ ){
+
+          replay_file
+            << " "
+            << strip.adc[t];
+        }
+
+
+        replay_file
+          << "\n";
+      }
+
+
+      // V -> module_id 1
+      for( const auto& strip : ml_v_strips ){
+
+        replay_file
+          << ml_event_id
+          << " "
+          << 1
+          << " "
+          << strip.strip_id;
+
+
+        for( int t = 0; t < 6; t++ ){
+
+          replay_file
+            << " "
+            << strip.adc[t];
+        }
+
+
+        replay_file
+          << "\n";
+      }
+    }
+
+    // std::vector<SBSGEMMLStrip> ml_u_strips;
+    // std::vector<SBSGEMMLStrip> ml_v_strips;
+
+    // const bool roi_ok = CollectMLROIStrips( ml_u_strips, ml_v_strips );
+    
+    if( roi_ok ){
+
+// ============================================================
+// Save EXACT SBSOffline -> ML-preprocessor boundary.
+//
+// Format, headerless:
+//
+// event_id module_id strip_id
+// adc0 adc1 adc2 adc3 adc4 adc5
+// adc_good0 adc_good1 adc_good2
+// adc_good3 adc_good4 adc_good5
+//
+// module_id:
+//   0 = U
+//   1 = V
+//
+// Regular ADC values come EXACTLY from ml_u_strips/ml_v_strips,
+// i.e. the objects about to be passed to
+// SBSGEMMLPreprocessor::Build().
+//
+// goodADC values are matched independently using
+// (axis, physical strip ID).
+// ============================================================
+
+if(
+  dump_this_module &&
+  diagnostic_files_ok &&
+  ml_event_id >= 0
+){
+
+  // ----------------------------------------------------------
+  // Build lookup:
+  //
+  //   (module_id, strip_id) -> index in goodADC arrays
+  // ----------------------------------------------------------
+
+  std::map<std::pair<int,int>, int> goodadc_lookup;
+
+
+  for(
+    int igood = 0;
+    igood < fNstrips_hit_goodADC;
+    igood++
+  ){
+
+    const bool isUgood =
+      fStripIsU_goodADC[igood] != 0;
+
+    const bool isVgood =
+      fStripIsV_goodADC[igood] != 0;
+
+
+    // Must belong to exactly one axis.
+    if( isUgood == isVgood ){
+      continue;
+    }
+
+
+    const int module_id =
+      isUgood ? 0 : 1;
+
+    const int strip_id =
+      static_cast<int>(
+        fStrip_goodADC[igood]
+      );
+
+
+    const std::pair<int,int> key{
+      module_id,
+      strip_id
+    };
+
+
+    // There should normally be only one goodADC row for a
+    // physical strip. Keep the first one defensively.
+    if(
+      goodadc_lookup.find(key)
+      == goodadc_lookup.end()
+    ){
+      goodadc_lookup[key] =
+        igood;
+    }
+  }
+
+
+  // ----------------------------------------------------------
+  // Helper to write one regular ML-input strip.
+  // ----------------------------------------------------------
+
+  auto write_preml_row =
+    [&](int module_id,
+        const SBSGEMMLStrip& strip)
+  {
+
+    preml_combined_file
+      << ml_event_id << " "
+      << module_id << " "
+      << strip.strip_id;
+
+
+    // Exact regular processed ADC waveform that is about to
+    // enter SBSGEMMLPreprocessor.
+    for( int t = 0; t < 6; t++ ){
+
+      preml_combined_file
+        << " "
+        << std::setprecision(
+             std::numeric_limits<float>::max_digits10
+           )
+        << strip.adc[t];
+    }
+
+
+    // Find corresponding goodADC truth waveform.
+    const std::pair<int,int> key{
+      module_id,
+      strip.strip_id
+    };
+
+
+    const auto it =
+      goodadc_lookup.find(key);
+
+
+    if( it != goodadc_lookup.end() ){
+
+      const int igood =
+        it->second;
+
+
+      for( int t = 0; t < 6; t++ ){
+
+        preml_combined_file
+          << " "
+          << fGoodADCsamples[igood][t];
+      }
+
+    } else {
+
+      // No goodADC truth associated with this regular strip.
+      for( int t = 0; t < 6; t++ ){
+
+        preml_combined_file
+          << " 0";
+      }
+    }
+
+
+    preml_combined_file
+      << "\n";
+  };
+
+
+  // ----------------------------------------------------------
+  // Write U rows.
+  // ----------------------------------------------------------
+
+  for( const auto& strip : ml_u_strips ){
+
+    write_preml_row(
+      0,
+      strip
+    );
+  }
+
+
+  // ----------------------------------------------------------
+  // Write V rows.
+  // ----------------------------------------------------------
+
+  for( const auto& strip : ml_v_strips ){
+
+    write_preml_row(
+      1,
+      strip
+    );
+  }
+}
+
+      SBSGEMMLPreprocessor preprocessor;
+
+      SBSGEMMLInput ml_input;
+
+      const auto ml_preprocess_t0 = MLClock::now(); // #TIMING Bhasitha
+
+      const bool build_ok =  preprocessor.Build( ml_u_strips, ml_v_strips, ml_input );
+
+      // #TIMING Bhasitha
+      const auto ml_preprocess_t1 = MLClock::now();
+      ml_preprocess_ms =
+        std::chrono::duration<double, std::milli>(
+          ml_preprocess_t1 - ml_preprocess_t0
+        ).count();
+      timing_build_ok = build_ok;
+
+
+      if( build_ok ){
+
+        timing_H = ml_input.H; // #TIMING Bhasitha
+        timing_W = ml_input.W; // #TIMING Bhasitha
+
+        std::vector<float> ml_logits;
+
+        const auto ml_inference_t0 = MLClock::now(); // #TIMING Bhasitha
+
+        const bool inference_ok = fMLHitFinder->Run( ml_input.x3d, ml_input.extra, ml_input.H, ml_input.W, ml_logits);       
+
+        // #TIMING Bhasitha
+        const auto ml_inference_t1 = MLClock::now();
+        ml_inference_ms =
+          std::chrono::duration<double, std::milli>(
+            ml_inference_t1 - ml_inference_t0
+          ).count();
+        timing_inference_ok = inference_ok;
+
+
+          SBSGEMMLPostprocessResult ml_post;
+
+          bool postprocess_ok = false;
+
+          // Temporary deployment threshold.
+          // We will replace/check this against checkpoint best_thr later.
+          constexpr float ML_PRED_THR = 0.60f;
+
+          if( inference_ok ){
+
+            SBSGEMMLPostprocessor postprocessor;
+
+            const auto ml_postprocess_t0 = MLClock::now(); // #TIMING Bhasitha
+ 
+            // ADC weighted center-of-mass is the default behavior of the postprocessor - Bhasitha
+            // constexpr bool ML_USE_ADC_WEIGHTED_CENTER = true;
+
+            // #TIMING Bhasitha
+            postprocess_ok = postprocessor.Process( ml_logits, ml_input, ML_PRED_THR, ml_post );
+            // postprocess_ok =
+            //     postprocessor.Process(
+            //         ml_logits,
+            //         ml_input,
+            //         ML_PRED_THR,
+            //         ml_post,
+            //         ML_USE_ADC_WEIGHTED_CENTER
+            //     );
+            // #TIMING Bhasitha
+            const auto ml_postprocess_t1 = MLClock::now();
+            ml_postprocess_ms =
+              std::chrono::duration<double, std::milli>(
+                ml_postprocess_t1 - ml_postprocess_t0
+              ).count();
+            timing_postprocess_ok = postprocess_ok;
+            if( postprocess_ok ){
+              timing_nblobs = ml_post.blobs.size();
+            }
+
+
+          }
+
+          // ============================================================
+          // Convert ML blobs into physical SBS hit candidates
+          // ============================================================
+
+          //std::vector<SBSGEMMLHitCandidate>  ml_hit_candidates;
+
+          // bool ml_geometry_ok = false;
+          // if ( ml_post.blobs.size() > 0 ) std::cout << "!!!!!!!!!!!! ML Blobs > 0 !!!!!!!!!!!!!!" << std::endl;
+          if( postprocess_ok ){
+
+            const auto ml_hitbuild_t0 = MLClock::now(); // #TIMING Bhasitha
+
+            success_ML_hit_finding = Make1DClustersAnd2DHitsFromMLblobs( ml_post.blobs );
+            // ml_geometry_ok =  BuildMLHitCandidates( ml_post, ml_hit_candidates );
+
+            // #TIMING Bhasitha
+            const auto ml_hitbuild_t1 = MLClock::now();
+            ml_hitbuild_ms =
+              std::chrono::duration<double, std::milli>(
+                ml_hitbuild_t1 - ml_hitbuild_t0
+              ).count();
+
+
+          }         
+      }
     }
   
-    // fxcmin = -1.e12;
-    // fxcmax = 1.e12;
-    // fycmin = -1.e12;
-    // fycmax = 1.e12;
 
-    fill_2D_hit_arrays();
+  //if ( success_ML_hit_finding ) std::cout << "*** ML Hit Made! ***" << std::endl;
+  
 
+
+
+
+    // ============================================================
+    // Finish ML timing for this event - #TIMING Bhasitha
+    // ============================================================
+
+    const auto ml_branch_t1 = MLClock::now();
+
+    const double ml_branch_ms =
+      std::chrono::duration<double, std::milli>(
+        ml_branch_t1 - ml_branch_t0
+      ).count();
+
+
+    double ml_core_ms = 0.0;
+
+    if( ml_roi_ms >= 0.0 )
+      ml_core_ms += ml_roi_ms;
+
+    if( ml_preprocess_ms >= 0.0 )
+      ml_core_ms += ml_preprocess_ms;
+
+    if( ml_inference_ms >= 0.0 )
+      ml_core_ms += ml_inference_ms;
+
+    if( ml_postprocess_ms >= 0.0 )
+      ml_core_ms += ml_postprocess_ms;
+
+    if( ml_hitbuild_ms >= 0.0 )
+      ml_core_ms += ml_hitbuild_ms;
+
+
+    const double ml_other_ms =
+      ml_branch_ms - ml_core_ms;
+
+
+    // const double inference_fraction =
+    //   ml_core_ms > 0.0
+    //     ? 100.0 * ml_inference_ms / ml_core_ms
+    //     : 0.0;
+    const double inference_fraction =
+        ( ml_core_ms > 0.0 && ml_inference_ms >= 0.0 )
+          ? 100.0 * ml_inference_ms / ml_core_ms
+          : 0.0;
+
+
+    static unsigned long ml_timing_count = 0;
+
+    ml_timing_count++;
+
+
+    // Print first 20 ML events, then every 100th event.
+    if(
+      ml_timing_count <= 20 ||
+      ml_timing_count % 100 == 0
+    ){
+
+      std::cout
+        << "\n[ML TIMING]"
+        << " event=" << ml_event_id
+        << " count=" << ml_timing_count
+        << "\n"
+        << "  status:"
+        << " roi=" << timing_roi_ok
+        << " build=" << timing_build_ok
+        << " inference=" << timing_inference_ok
+        << " post=" << timing_postprocess_ok
+        << " success=" << success_ML_hit_finding
+        << "\n"
+        << "  input:"
+        << " U=" << timing_nU
+        << " V=" << timing_nV
+        << " H=" << timing_H
+        << " W=" << timing_W
+        << " blobs=" << timing_nblobs
+        << " hits=" << fN2Dhits
+        << "\n"
+        << "  timing_ms:"
+        << " roi=" << ml_roi_ms
+        << " preprocess=" << ml_preprocess_ms
+        << " inference=" << ml_inference_ms
+        << " post=" << ml_postprocess_ms
+        << " hitbuild=" << ml_hitbuild_ms
+        << "\n"
+        << "  core=" << ml_core_ms
+        << " other=" << ml_other_ms
+        << " branch_total=" << ml_branch_ms
+        << " inference/core=" << inference_fraction
+        << "%"
+        << std::endl;
+    }
+  }
+
+
+
+
+  if ( !do_ML_hit_finding /*|| !success_ML_hit_finding*/ ){
+    // Let's handle this the following way. We only want to call 1D cluster-finding and 2D hit finding ONCE, regardless of
+    // the number of constraints! 
+    // This means that if we want to handle MORE than one constraint point, we MUST set fStoreAll1Dclusters to true
+    // 
+
+    // TString sname;
+    // sname.Form("%s.%s.%s",(static_cast<THaDetector *>(GetParent()) )->GetApparatus()->GetName(),GetParent()->GetName(), GetName() );
+
+    // if( sname.Contains("gemCeF") ){
+    //   std::cout << "Calling hit reconstruction for detector " << (static_cast<THaDetector *>(GetParent()) )->GetApparatus()->GetName() << "."
+    // 	      << GetParent()->GetName() << "." << GetName()
+    // 	      << ", N fired strips = " << fNstrips_hit << std::endl;
+    //   std::cout << "Number of constraints defined = " << fxcmin.size() << std::endl;
+    //   for( int i=0; i<fxcmin.size(); i++ ){
+    //     std::cout << "Constraint " << i << ": (xmin,xmax,ymin,ymax)=("
+    // 		<< fxcmin[i] << ", " << fxcmax[i] << ", "
+    // 		<< fycmin[i] << ", " << fycmax[i] << ")" << std::endl;
+    //   }
+    // }
+    //Start with 1D clustering; if the constraint array for this module has EXACTLY one point and the store all clusters flag is
+    // NOT set, do the clustering with constraints! Otherwise do it without constraints!
+
+    // if( fxcmin.size() >= 1 && !fStoreAll1Dclusters ){ 
+
+    //   double xcenter = 0.5*(fxcmin[0]+fxcmax[0]);
+    //   double xwidth = 0.5*(fxcmax[0]-fxcmin[0]);
+    //   double ycenter = 0.5*(fycmin[0]+fycmax[0]);
+    //   double ywidth = 0.5*(fycmax[0]-fycmin[0]);
+
+    //   double ucenter = xcenter * fPxU + ycenter * fPyU;
+    //   double vcenter = xcenter * fPxV + ycenter * fPyV;
+
+    //   double umin,umax,vmin,vmax;
+
+    //   double xmin = fxcmin[0];
+    //   double xmax = fxcmax[0];
+    //   double ymin = fycmin[0];
+    //   double ymax = fycmax[0];
+      
+    //   //check the four corners of the rectangle and compute the maximum values of u and v occuring at the four corners of the rectangular region:
+    //   // NOTE: we will ALSO enforce the 2D search region in X and Y when we combine 1D U/V clusters into 2D X/Y hits, which, depending on the U/V strip orientation
+    //   // can exclude some 2D hits that would have passed the U/V constraints defined by the corners of the X/Y rectangle, but been outside the X/Y constraint rectangle
+
+    //   double u00 = xmin * fPxU + ymin * fPyU;
+    //   double u01 = xmin * fPxU + ymax * fPyU;
+    //   double u10 = xmax * fPxU + ymin * fPyU;
+    //   double u11 = xmax * fPxU + ymax * fPyU;
+
+    //   //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:
+    //   umin = std::min( u00, std::min(u01, std::min(u10, u11) ) );
+    //   umax = std::max( u00, std::max(u01, std::max(u10, u11) ) );
+
+    //   double v00 = xmin * fPxV + ymin * fPyV;
+    //   double v01 = xmin * fPxV + ymax * fPyV;
+    //   double v10 = xmax * fPxV + ymin * fPyV;
+    //   double v11 = xmax * fPxV + ymax * fPyV;
+    
+    //   vmin = std::min( v00, std::min(v01, std::min(v10, v11) ) );
+    //   vmax = std::max( v00, std::max(v01, std::max(v10, v11) ) );
+      
+    //   find_clusters_1D(SBSGEM::kUaxis, ucenter, 0.5*(umax-umin) ); //u strips
+    //   find_clusters_1D(SBSGEM::kVaxis, vcenter, 0.5*(vmax-vmin) ); //v strips
+    // } else { //use the default wide-open limits!
+    //   // std::cout << "Calling 1D cluster finding with storage of ALL 1D clusters, num. constraints = "
+    //   // 	      << fxcmin.size() << std::endl;
+    //   find_clusters_1D(SBSGEM::kUaxis);
+    //   find_clusters_1D(SBSGEM::kVaxis);
+    // }
+
+    if( fxcmin.size() >= 1 ){
+
+      // double xmin = 10000000, xmax = -10000000, ymin = 10000000, ymax = -10000000; // Define bounds that are sure to be overriden.
+      // double umin = 10000000, umax = -10000000, vmin = 10000000, vmax = -10000000; 
+
+      // // Let us loop through all the constraint points and find the above.
+      // for ( int icp = 0; icp < fxcmin.size(); icp++  ){
+
+      //   double xmin_icp = fxcmin[icp];
+      //   double xmax_icp = fxcmax[icp];
+      //   double ymin_icp = fycmin[icp];
+      //   double ymax_icp = fycmax[icp];
+
+      //   xmin = std::min( xmin, xmin_icp );
+      //   xmax = std::max( xmax, xmax_icp );
+      //   ymin = std::min( ymin, ymin_icp );
+      //   ymax = std::max( ymax, ymax_icp );
+
+      //   double u00 = xmin_icp * fPxU + ymin_icp * fPyU;
+      //   double u01 = xmin_icp * fPxU + ymax_icp * fPyU;
+      //   double u10 = xmax_icp * fPxU + ymin_icp * fPyU;
+      //   double u11 = xmax_icp * fPxU + ymax_icp * fPyU;
+
+      //   //this is some elegant-looking (compact) code, but perhaps algorithmically clunky:      
+      //   umin = std::min( umin, std::min( u00, std::min(u01, std::min(u10, u11) ) ) );
+      //   umax = std::max( umax, std::max( u00, std::max(u01, std::max(u10, u11) ) ) );
+
+      //   double v00 = xmin_icp * fPxV + ymin_icp * fPyV;
+      //   double v01 = xmin_icp * fPxV + ymax_icp * fPyV;
+      //   double v10 = xmax_icp * fPxV + ymin_icp * fPyV;
+      //   double v11 = xmax_icp * fPxV + ymax_icp * fPyV;
+
+      //   vmin = std::min( vmin, std::min( v00, std::min(v01, std::min(v10, v11) ) ) );
+      //   vmax = std::max( vmax, std::max( v00, std::max(v01, std::max(v10, v11) ) ) );
+      // }    
+
+      // fROI_xmin = xmin;
+      // fROI_xmax = xmax;
+      // fROI_ymin = ymin;
+      // fROI_ymax = ymax;
+
+      // //std::cout << "ROI strip, xmin : xmax : ymin : ymax =                             " << xmin << " : "  << xmax << " : " << ymin << " : " << ymax << std::endl;
+
+      // // What strip numbers does these min and max values correspond to? 
+      // // Main use case is for ML model training.
+      // fStripUc_min = GetStripNumberFromPos(umin, SBSGEM::kUaxis);
+      // fStripUc_max = GetStripNumberFromPos(umax, SBSGEM::kUaxis);
+      // fStripVc_min = GetStripNumberFromPos(vmin, SBSGEM::kVaxis);
+      // fStripVc_max = GetStripNumberFromPos(vmax, SBSGEM::kVaxis);
+
+      // if ( fStripUc_min >= fNstripsU || fStripUc_max < 0 || fStripVc_min >= fNstripsV || fStripVc_max < 0 ) fIsROIinMod = false; // NO overlap of ROI with the module.
+      // else{     
+      //  fIsROIinMod = true;
+      //  // Clamp the min and max strips to 0 and fNstrips<U/V>, respectively, if they are out-of-bounds.
+      //  if ( fStripUc_min < 0 )          fStripUc_min = 0;
+      //  if ( fStripUc_max >= fNstripsU ) fStripUc_max = fNstripsU - 1;
+      //  if ( fStripVc_min < 0 )          fStripVc_min = 0;
+      // if ( fStripVc_max >= fNstripsV ) fStripVc_max = fNstripsV - 1;
+      // }    
+
+      //std::cout << "ROI strip, umin : umax : vmin : vmax : IN/OUT? =                   " << umin << " : "  << umax << " : " << vmin << " : " << vmax << " : " << fIsROIinMod << std::endl;
+      //std::cout << "ROI strip, istrip_umin : istrip_umax : istrip_vmin : istrip_vmax = " << fStripUc_min << " : " << fStripUc_max << " : " << fStripVc_min << " : " << fStripVc_max << std::endl << std::endl;   
+
+      double ucenter = 0.5*(umin + umax);
+      double vcenter = 0.5*(vmin + vmax);
+      
+      find_clusters_1D(SBSGEM::kUaxis, ucenter, 0.5*(umax-umin) ); //u strips
+      find_clusters_1D(SBSGEM::kVaxis, vcenter, 0.5*(vmax-vmin) ); //v strips
+    } else { //use the default wide-open limits!
+      // std::cout << "Calling 1D cluster finding with storage of ALL 1D clusters, num. constraints = "
+      //        << fxcmin.size() << std::endl;
+      find_clusters_1D(SBSGEM::kUaxis);
+      find_clusters_1D(SBSGEM::kVaxis);
+    }
+
+    // std::cout << "After 1D cluster-finding, (fNclustU,fNclustV)=("
+    //      << fNclustU << ", " << fNclustV << ")" << std::endl;
+    
+    //Now make 2D clusters:
+
+    if( fNclustU > 0 && fNclustV > 0 ){
+
+      fGoodUclustersIndex.clear();
+      fGoodVclustersIndex.clear();
+      fGoodUclustersIndex.resize( fNclustU );
+      fGoodVclustersIndex.resize( fNclustV );
+
+      fNclustU_good = 0;
+      fNclustV_good = 0;
+
+      for ( int iclus = 0; iclus < fNclustU; iclus++ ){      
+        if ( fUclusters[iclus].keep == true ){
+          fGoodUclustersIndex[fNclustU_good] = iclus;
+          fNclustU_good++;
+        }
+      }
+      for ( int iclus = 0; iclus < fNclustV; iclus++ ){
+        if ( fVclusters[iclus].keep == true ){
+          fGoodVclustersIndex[fNclustV_good] = iclus;
+          fNclustV_good++;
+        }
+      }
+    
+      // fxcmin = -1.e12;
+      // fxcmax = 1.e12;
+      // fycmin = -1.e12;
+      // fycmax = 1.e12;
+
+      fill_2D_hit_arrays();
+    }
   }
 
   // We will want to have a flag controlling whether or not to do good-ADC at the end.
@@ -3741,7 +6941,6 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
   
   //hopefully this compiles and works correctly:
   std::vector<sbsgemcluster_t> &clusters = (axis == SBSGEM::kUaxis ) ? fUclusters : fVclusters;
-  
 
   UInt_t &nclust = ( axis == SBSGEM::kUaxis ) ? fNclustU : fNclustV; 
   UInt_t &nclust_pos = ( axis == SBSGEM::kUaxis ) ? fNclustU_pos : fNclustV_pos; 
@@ -3752,10 +6951,17 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
   nclust_pos = 0;
   nclust_neg = 0;
   nclust_tot = 0;
- 
+
+  double thresh_wTScorr = -1.0;
+  double thresh_uTScorr = -1.0;
+  if( fUseTSfracTrigPhaseCorr ){
+    thresh_wTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_wTScorr_vs_TrigPhase[fTrigPhase] : fThreshV_wTScorr_vs_TrigPhase[fTrigPhase];
+    thresh_uTScorr = ( axis == SBSGEM::kUaxis ) ? fThreshU_uTScorr_vs_TrigPhase[fTrigPhase] : fThreshV_uTScorr_vs_TrigPhase[fTrigPhase];
+  }
   
   clusters.clear();
-  
+
+  //Temporary local variables for clustering:
   
   std::set<UShort_t> striplist;  //sorted list of strips for 1D clustering
   std::map<UShort_t, UInt_t> hitindex; //key = strip ID, mapped value = index in decoded hit array, needed to access the other information efficiently:
@@ -3766,6 +6972,8 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
   std::map<UShort_t, Double_t> Tmean_strip_deconv; //strip deconvoluted mean time
   std::map<UShort_t, Double_t> Tfit_strip; //strip "fit" time
   std::map<UShort_t, Double_t> Tsigma_strip; //strip rms time with first and/or last samples removed (if applicable)
+  std::map<UShort_t, Double_t> uTScorr; //unweighted correlation coefficient of this strip's time samples with expected pulse shape
+  std::map<UShort_t, Double_t> wTScorr; //weighted correlation coefficient of this strip's time samples with expected pulse shape
   
   std::set<UShort_t> striplist_neg;  //same as above but for negative strips
   std::map<UShort_t, UInt_t> hitindex_neg;
@@ -3810,6 +7018,9 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
 	Tfit_strip[fStrip[ihit]] = fStripTfit[ihit];
 	Tsigma_strip[fStrip[ihit]] = fTsigma[ihit];
 
+	uTScorr[fStrip[ihit]] = fStripTScorr_u[ihit];
+	wTScorr[fStrip[ihit]] = fStripTScorr_w[ihit];
+	
 	//fClusteringFlag =
 	// 1. Use deconvoluted max. combo
 	// 2. Use sum of the three time samples closest to maxstrip_t0
@@ -3895,6 +7106,28 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
       
       if( fUseStripTimingCuts != 0 && fabs( tstrip - t0 ) > tcut * tsigma ) goodtime = false;
 
+      bool goodTScorr = true;
+      if( fUseTSfracTrigPhaseCorr ){
+	//behavior according to the flag:
+	// 0 = apply threshold on unweighted corr. coeff. only
+	// 1 = apply threshold on weighted corr. coeff. only
+	// 2 = OR of both thresholds
+	// >2 = AND of both thresholds
+
+	bool good_uTScorr = uTScorr[strip] >= thresh_uTScorr;
+	bool good_wTScorr = wTScorr[strip] >= thresh_wTScorr;
+	
+	if( fTSfracTrigPhaseCorrFlag == 0 ){
+	  goodTScorr = good_uTScorr;
+	} else if( fTSfracTrigPhaseCorrFlag == 1 ){
+	  goodTScorr = good_wTScorr; 
+	} else if( fTSfracTrigPhaseCorrFlag == 2 ){
+	  goodTScorr = (good_uTScorr || good_wTScorr);
+	} else if( fTSfracTrigPhaseCorrFlag > 2 ){
+	  goodTScorr = (good_uTScorr && good_wTScorr);
+	}
+      }
+      
       // if( !goodtime && fClusteringFlag == 1 ){
       // 	// if a strip fails the basic timing cut but has good deconvoluted ADC value, keep it
       // 	// anyway:
@@ -3903,7 +7136,7 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
       // 	}
       // }
 
-      if( goodtime && fKeepStrip[hitindex[strip]] ){
+      if( goodTScorr && goodtime && fKeepStrip[hitindex[strip]] ){
 	islocalmax[strip] = true;
 	localmaxima.insert( strip );
       }
@@ -4228,7 +7461,7 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
       if( isamp + 1 == fN_MPD_TIME_SAMP && clusttemp.DeconvADCsamples[isamp] > maxADCcombo_deconv ){
 	maxADCcombo_deconv = clusttemp.DeconvADCsamples[isamp];
 	clusttemp.icombomaxDeconv = fN_MPD_TIME_SAMP;
-      }	
+      }
     }
     
     clusttemp.hitpos_mean = sumx / sumwx;
@@ -4244,6 +7477,8 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
 
     FitClusterTime( clusttemp );
 
+    CalcClustTScorr_vs_TrigPhase( clusttemp, axis ); //This routine will calculate the weighted and unweighted correlation coefficients for cluster-summed ADC samples
+    
     //clusttemp.t_mean_fit -= fStripMaxTcut_central_fit[axis];
     
     //initialize "keep" flag for all 1D clusters to false (ADR on March 26, 2026):
@@ -4266,14 +7501,10 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
     }
 
     bool isClusterWithinConstraint = fabs( clusttemp.hitpos_mean - constraint_center ) <= constraint_width;
-
     if ( isClusterWithinConstraint ) clusttemp.keep = true;
-     
     
-    //Hopefully this works correctly:
-    // if( fabs( clusttemp.hitpos_mean - constraint_center ) <= constraint_width || fStoreAll1Dclusters ){
+    //if( fabs( clusttemp.hitpos_mean - constraint_center ) <= constraint_width || fStoreAll1Dclusters ){
     if( isClusterWithinConstraint || fStoreAll1Dclusters ){
-
       //Fit max strip time for hits in constraint region:
       // double Tfit = FitStripTime( hitindex[stripmax], 20.0 );
       // fStripTfit[hitindex[stripmax]] = Tfit;
@@ -4628,20 +7859,15 @@ void SBSGEMModule::find_clusters_1D( SBSGEM::GEMaxis_t axis, Double_t constraint
   fClustering1DIsDone = true;
 }
 
-void SBSGEMModule::fill_2D_hit_arrays(){
 
-  //This will also need to be modified to allow for the possibility of multiple constraint points.
-  // 1) Don't zero out the size of everything since there may already be some hits in here from a previous call
-  // 2) We'll need to implement some checks to ensure that we don't double-count any potential 2D hit candidates
-  // 3) We'll ALSO need to find a way to implement the constraints here! Oh wait, no we don't
-  // 4) But we DO need to make this method slightly more efficient: on a FIRST call to this routine
+void SBSGEMModule::fill_2D_hit_arrays(){
   
   //Clear out the 2D hit array to get rid of any leftover junk from prior events:
   fHits.clear();
   fN2Dhits = 0;
 
-  //fHits.resize( std::min( fNclustU*fNclustV, fMAX2DHITS ) );
-  fHits.resize( std::min( fUGoodClustersIndex.size()*fVGoodClustersIndex.size(), static_cast<size_t>(fMAX2DHITS) ) );
+  // fHits.resize( std::min( fNclustU*fNclustV, fMAX2DHITS ) );
+  fHits.resize( std::min( fNclustU_good*fNclustV_good, fMAX2DHITS ) );
   
   //if( fNclustU * fNclustV > fMAX2DHITS ){
   //   std::cout << "Warning in SBSGEMModule::fill_2D_hit_arrays(): 
@@ -4673,10 +7899,12 @@ void SBSGEMModule::fill_2D_hit_arrays(){
   //std::cout << "Starting 2D hit finding..." << std::endl;
   // for( UInt_t iu=0; iu<fNclustU; iu++ ){
   //   for( UInt_t iv=0; iv<fNclustV; iv++ ){
-  for ( UInt_t iu : fUGoodClustersIndex ){
-    for ( UInt_t iv : fVGoodClustersIndex ){
+  for( UInt_t igoodU=0; igoodU<fNclustU_good; igoodU++ ){
+    int iu = fGoodUclustersIndex[igoodU];
+    for( UInt_t igoodV=0; igoodV<fNclustV_good; igoodV++ ){
+      int iv = fGoodVclustersIndex[igoodV];
       //Check that this is a "good" cluster and that it was not already used in track formation:
-      // if( fUclusters[iu].keep && fVclusters[iv].keep && !fUclusters[iu].ontrack && !fVclusters[iv].ontrack ){
+      // if( fUclusters[iu].keep && fVclusters[iv].keep && !fUclusters[iu].ontrack && !fVclusters[iv].ontrack ){ 
       if( !fUclusters[iu].ontrack && !fVclusters[iv].ontrack ){
 	//Initialize sums for computing cluster and strip correlation coefficients:
 	sbsgemhit_t hittemp; // declare a temporary "hit" object:
@@ -4688,6 +7916,7 @@ void SBSGEMModule::fill_2D_hit_arrays(){
 	//Initialize "keep" to true:
 	hittemp.keep = true;
 	hittemp.highquality = false;
+  hittemp.isMLhit = false;
 	hittemp.ontrack = false;
 	hittemp.trackidx = -1;
 	hittemp.iuclust = iu;
@@ -4723,6 +7952,7 @@ void SBSGEMModule::fill_2D_hit_arrays(){
 	  }
 	
 	  if( passed_any_constraint || fxcmin.size() == 0 ){
+    // if (true) {
 	    hittemp.thit = 0.5*(fUclusters[iu].t_mean + fVclusters[iv].t_mean);
 	    hittemp.Ehit = 0.5*(fUclusters[iu].clusterADCsum + fVclusters[iv].clusterADCsum);
       hittemp.goodADC_Ehit = 0.5*(fUclusters[iu].clustergoodADCsum + fVclusters[iv].clustergoodADCsum);
@@ -6029,6 +9259,92 @@ Double_t SBSGEMModule::CorrCoeff( int nsamples, const std::vector<double> &Usamp
   
 }
 
+// Utility method to calculate weighted correlation coefficient between two arbitrary vectors:
+// (size of V1, V2, and W must match or exceed "nsamples" argument to avoid seg. fault!)
+Double_t SBSGEMModule::CorrCoeffWeighted( int nsamples, const std::vector<double> &Vec1, const std::vector<double> &Vec2, const std::vector<double> &Weights ){
+  double sumweights = 0.0;
+  double sumx = 0.0, sumy = 0.0, sumx2 = 0.0, sumy2 = 0.0, sumxy = 0.0;
+
+  if( Vec1.size() < nsamples || Vec2.size() < nsamples || Weights.size() < nsamples ){
+    return -10000.0;
+  }
+
+  for( int i=0; i<nsamples; i++ ){
+    sumweights += Weights[i];
+    sumx += Vec1[i] * Weights[i];
+    sumy += Vec2[i] * Weights[i];
+    sumx2 += pow(Vec1[i],2)*Weights[i];
+    sumy2 += pow(Vec2[i],2)*Weights[i];
+    sumxy += Vec1[i]*Vec2[i]*Weights[i];
+  }
+
+  double meanX = sumx / sumweights;
+  double meanY = sumy / sumweights;
+  double varX = sumx2 / sumweights - pow(meanX,2);
+  double varY = sumy2 / sumweights - pow(meanY,2);
+  double sigX = sqrt(varX);
+  double sigY = sqrt(varY);
+
+  return ( sumxy - sumweights * meanX * meanY )/(sumweights * sigX * sigY);
+  
+}
+
+// Calculate the (weighted or unweighted) correlation coefficient of this strip's time samples with the
+// expected shape for "good" (in-time) signals. Let's refer to the "StripTSchi2" method as a template for how to write this one efficiently
+Double_t SBSGEMModule::CalcStripTScorr_vs_TrigPhase( int hitindex, UInt_t trigphase, bool weighted ){
+  if( !(fUseTSfracTrigPhaseCorr && fTSfracTrigPhaseIsInitialized) ) return -1000.0;
+  
+  if( hitindex < 0 || hitindex > fNstrips_hit ) return -1000.0; //NOTE: we use ">" rather than ">=" in this check because this method gets called BEFORE incrementing fNstrips_hit in the Decode method!
+
+  //Declare references to the respective parameter vectors depending on axis: 
+  std::vector<double> &TSfrac_vs_trigphase_mean = fAxis[hitindex] == SBSGEM::kUaxis ? fTSfrac_vs_TrigPhase_Umean : fTSfrac_vs_TrigPhase_Vmean;
+  std::vector<double> &TSfrac_vs_trigphase_sigma = fAxis[hitindex] == SBSGEM::kUaxis ? fTSfrac_vs_TrigPhase_Usigma : fTSfrac_vs_TrigPhase_Vsigma;
+
+  double ADCsum = fADCsums[hitindex];
+  
+  std::vector<double> &ADCsamples = fADCsamples[hitindex];
+
+  std::vector<double> ADCfrac(fN_MPD_TIME_SAMP), ADCfrac_expect(fN_MPD_TIME_SAMP), weights(fN_MPD_TIME_SAMP,1.0);
+
+  int nsamp = fN_MPD_TIME_SAMP; //declare and initialize this local variable to avoid some compiler warnings about signed/unsigned comparisons (hopefully)
+  
+  for( int isamp=0; isamp<nsamp; isamp++ ){
+    ADCfrac[isamp] = ADCsamples[isamp]/ADCsum;
+    ADCfrac_expect[isamp] = TSfrac_vs_trigphase_mean[trigphase+6*isamp];
+    if( weighted ){ //weight by 1/sigma^2
+      weights[isamp] = pow( TSfrac_vs_trigphase_sigma[trigphase+6*isamp], -2 );
+    }
+  }
+
+  //return value is the result of the CorrCoeffWeighted method above; if "weighted" is true, weight by sigma^(-2), otherwise all weights are set to 1
+  return CorrCoeffWeighted( nsamp, ADCfrac, ADCfrac_expect, weights );
+}
+
+void SBSGEMModule::CalcClustTScorr_vs_TrigPhase( sbsgemcluster_t &clust, SBSGEM::GEMaxis_t axis ){
+  clust.uTScorr = -1000.;
+  clust.wTScorr = -1000.;
+
+  if( !fUseTSfracTrigPhaseCorr ) return;
+    
+  int nsamp = fN_MPD_TIME_SAMP;
+  
+  std::vector<double> ADCfrac(nsamp,0.0);
+  std::vector<double> ADCfrac_expect(nsamp,0.0);
+  std::vector<double> weights_u(nsamp,1.0);
+  std::vector<double> weights(nsamp,1.0);
+  for( int isamp=0; isamp<nsamp; isamp++ ){
+    ADCfrac[isamp] = clust.ADCsamples[isamp]/clust.clusterADCsum;
+    ADCfrac_expect[isamp] = ( axis == SBSGEM::kUaxis ) ? fTSfrac_vs_TrigPhase_Umean[fTrigPhase+6*isamp] : fTSfrac_vs_TrigPhase_Vmean[fTrigPhase+6*isamp];
+    
+    double sigma = ( axis == SBSGEM::kUaxis ) ? fTSfrac_vs_TrigPhase_Usigma[fTrigPhase+6*isamp] : fTSfrac_vs_TrigPhase_Vsigma[fTrigPhase+6*isamp];
+
+    weights[isamp] = pow(sigma,-2);
+  }
+
+  clust.uTScorr = CorrCoeffWeighted( nsamp, ADCfrac, ADCfrac_expect, weights_u );
+  clust.wTScorr = CorrCoeffWeighted( nsamp, ADCfrac, ADCfrac_expect, weights );
+}
+
 TVector2 SBSGEMModule::UVtoXY( TVector2 UV ){
   double det = fPxU*fPyV - fPyU*fPxV;
 
@@ -6299,6 +9615,9 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     double mindiff = sortedADCs.back() - sortedADCs.front(); 
     
     for( int j=0; j<=sortedADCs.size()-fCommonModeMinStripsInRange; j++ ){
+
+      // So suppose size = 128, minstrips = 20; then the first iteration will take diff = ADC[19]-ADC[0]
+      // the last iteration will take diff = ADC[127]-ADC[108] --> CORRECT!
       double diff = sortedADCs[j+fCommonModeMinStripsInRange-1]-sortedADCs[j];
       
       if( diff < mindiff ){
@@ -6334,7 +9653,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       
     }
 
-    if( ngood >= fCommonModeMinStripsInRange ){
+    if( ngood >= fCommonModeMinStripsInRange ){ //if at least minstrips strips fall within +/- 3*sigma_ped, average all, otherwise, take the best 20
       cm_temp = sumADC/double(ngood);
     }
     
@@ -6566,7 +9885,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 
     if( n_keep < fCommonModeMinStripsInRange ) return cm_mean;
     
-    CM_1 /= n_keep;
+    CM_1 /= double(n_keep);
     n_keep = 0;
     
     for( int ihit=0; ihit<nhits; ihit++ ){
@@ -6586,7 +9905,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     return CM_2/n_keep;
     
     
-  } else if( flag == 4 ) { //Online Danning method for GEn
+  } else if( flag == 4 || flag == 6 ) { //Online Danning method for GEn/GEp
     int iAPV = apvinfo.pos;
     double cm_mean = ( apvinfo.axis == SBSGEM::kUaxis ) ? fCommonModeMeanU[iAPV] : fCommonModeMeanV[iAPV];
     double cm_rms = ( apvinfo.axis == SBSGEM::kUaxis ) ? fCommonModeRMSU[iAPV] : fCommonModeRMSV[iAPV];
@@ -6600,8 +9919,8 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 
       double cm_min = cm_mean - fCommonModeRange_nsigma*cm_rms;
 
-      //NOTE: this line is only applicable to GEP running after a certain point! Comment our for early GEP analysis or previous expt's.
-      if( iter == 0 ) cm_min = 0.0;
+      //NOTE: this line is only applicable to GEP running after a certain point! Comment out for early GEP analysis or previous expt's.
+      if( iter == 0 && flag == 6 ) cm_min = 0.0;
       
       double cm_max = cm_mean + fCommonModeRange_nsigma*cm_rms;
       double sumADCinrange = 0.0;
@@ -6626,7 +9945,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 	}
       }
    
-      cm_temp = sumADCinrange / n_keep;
+      cm_temp = sumADCinrange / double(n_keep);
     }
 
     if( n_keep < fCommonModeMinStripsInRange ){
@@ -6800,7 +10119,7 @@ void SBSGEMModule::fill_ADCfrac_vs_time_sample_goodstrip( Int_t hitindex, bool i
 
 //This function calculates the chi2 of a vector of time samples with respect to the "Good Strip" averages:
 double SBSGEMModule::StripTSchi2( int hitindex ){
-  if( hitindex < 0 || hitindex > fNstrips_hit ) return -1.;
+  if( hitindex < 0 || hitindex > fNstrips_hit ) return -1.; //NOTE: we use ">" rather than ">=" in this check because this method gets called BEFORE incrementing fNstrips_hit in the Decode method!
   double chi2 = 0.0;
   double t0 = fStripMaxTcut_central[fAxis[hitindex]] - fStripTau;
 
@@ -7158,9 +10477,9 @@ double SBSGEMModule::GetCommonModeCorrection( UInt_t isamp, const mpdmap_t &apvi
   if( ngoodhits >= fCorrectCommonModeMinStrips &&
       (online_bias > fCorrectCommonMode_Nsigma * cm_rms || flag == 0 ) ){
     //Attempt to calculate a correction:
-    if( fCommonModeFlag == 0 ){
+    if( fCommonModeFlag == 0 ){ // Enhanced sorting; 
       //sorting: this method will be significantly biased if we use the same "low strip" rejection as for full-readout events
-      if( ngoodhits >= fCommonModeNstripRejectLow + fCommonModeNstripRejectHigh + fCommonModeMinStripsInRange ){
+      if( ngoodhits >= fCommonModeMinStripsInRange ){ //In this context, "ngoodhits" is the number of strips that did (or would have) passed online ZS 
 	std::vector<double> sortedADCs(ngood);
 	for( int ihit=0; ihit<ngood; ihit++ ){
 	  int iraw = isamp + fN_MPD_TIME_SAMP * goodhits[ihit];
@@ -7173,15 +10492,54 @@ double SBSGEMModule::GetCommonModeCorrection( UInt_t isamp, const mpdmap_t &apvi
 	int stripcount=0;
 	
 	std::sort( sortedADCs.begin(), sortedADCs.end() );
-	
-	for( int k=fCommonModeNstripRejectLow; k<ngoodhits-fCommonModeNstripRejectHigh; k++ ){
-	  cm_temp += sortedADCs[k];
-	  stripcount++;
-	}
-	CMcorrection = fCM_online[isamp] - cm_temp/double(stripcount);
+        // Comment out the next 4 lines belonging to the original generic sorting algorithm:
+	//for( int k=fCommonModeNstripRejectLow; k<ngoodhits-fCommonModeNstripRejectHigh; k++ ){
+	//  cm_temp += sortedADCs[k];
+	//  stripcount++;
+	//}
+
+	// Add the "enhanced" part of the algorithm here:
+        // Create a moving "search window" within sorted ADCs
+        int firststrip = 0;
+        double mindiff = sortedADCs.back() - sortedADCs.front();
+        int windowsize = fCommonModeMinStripsInRange;  // May need to revist this definition if we want smaller or larger windows for corrections
+        for( int j=0; j<=int(sortedADCs.size()) - windowsize; j++ ){
+          double diff = sortedADCs[j + windowsize - 1] - sortedADCs[j];
+          if( diff < mindiff ){
+            mindiff = diff;
+            firststrip = j;
+            double sum = 0.0;
+            for( int k=j; k<j+windowsize; k++ ){
+              sum += sortedADCs[k];
+            }
+            cm_temp = sum/double(windowsize);
+          }
+        }
+        // We average all the strips within +/-3*sigma_ped of this cm_temp value
+        stripcount=0;
+        double sumADC =0.0;
+        for( int ihit=0; ihit<ngood; ihit++ ){
+          int iraw = isamp + fN_MPD_TIME_SAMP*goodhits[ihit];
+          int strip = fStripAPV[iraw];
+          double pedRMS = ( apvinfo.axis == SBSGEM::kUaxis ) ? fPedRMSU[strip] : fPedRMSV[strip];
+          
+          if( fabs( fPedSubADC_APV[iraw] - cm_temp ) <= 3.0*pedRMS*fRMS_ConversionFactor ){
+            sumADC += fPedSubADC_APV[iraw];
+            stripcount++;
+          }
+        }
+
+        if( stripcount >= windowsize ){ // Check if there were more strips within 3 sigma than in our orginal window
+          cm_temp = sumADC/double(stripcount);
+          CMcorrection = fCM_online[isamp] - cm_temp;
+        } else {
+          CMcorrection = 0;
+        }
+
+	    //CMcorrection = fCM_online[isamp] - cm_temp;
       }
-    } else if( fCommonModeFlag == 1 ){
-      
+    } else if( fCommonModeFlag == 1 ){ // Flag 1 does not exist for GetCommonMode function, here it does Danning method
+
       double cm_min = cm_mean - fCommonModeDanningMethod_NsigmaCut*cm_rms;
       double cm_max = cm_mean + fCommonModeDanningMethod_NsigmaCut*cm_rms;
 	
@@ -7189,7 +10547,6 @@ double SBSGEMModule::GetCommonModeCorrection( UInt_t isamp, const mpdmap_t &apvi
       for( int iter=0; iter<fCommonModeNumIterations; iter++ ){
 	  
 	int nstripsinrange = 0;
-	  
 	double sumADCinrange = 0.0;
 	  
 	for( int ihit=0; ihit<ngood; ihit++ ){
@@ -7205,10 +10562,10 @@ double SBSGEMModule::GetCommonModeCorrection( UInt_t isamp, const mpdmap_t &apvi
 	    
 	  if( iter > 0 ){
 	    maxtemp = cm_temp + fCommonModeDanningMethod_NsigmaCut * rmstemp * fRMS_ConversionFactor;
-	    mintemp = cm_temp + fCommonModeDanningMethod_NsigmaCut * rmstemp * fRMS_ConversionFactor;
+	    mintemp = cm_temp - fCommonModeDanningMethod_NsigmaCut * rmstemp * fRMS_ConversionFactor;
 	  }
 	    
-	  if( ADCtemp >= mintemp && ADCtemp >= maxtemp ){
+	  if( ADCtemp >= mintemp && ADCtemp <= maxtemp ){
 	    nstripsinrange++;
 	    sumADCinrange += ADCtemp;
 	  }  
@@ -7435,4 +10792,3 @@ int SBSGEMModule::GetNumGoodHitsAPV( UInt_t isamp, const mpdmap_t &apvinfo, UInt
 
   return ngood;
 }
-

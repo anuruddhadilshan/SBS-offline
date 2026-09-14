@@ -10,6 +10,36 @@ set(DEV_WARNING "cmake build of SBS-Offline is still in development. Please test
 cmake_minimum_required(VERSION 3.9 FATAL_ERROR)
 project(sbs)
 
+
+#----------------------------------------------------------------------------
+# ONNX Runtime
+#----------------------------------------------------------------------------
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of an ONNX Runtime installation")
+
+find_path(ONNXRUNTIME_INCLUDE_DIR
+  NAMES onnxruntime_cxx_api.h
+  HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT
+  PATH_SUFFIXES include include/onnxruntime
+)
+
+find_library(ONNXRUNTIME_LIBRARY
+  NAMES onnxruntime
+  HINTS ${ONNXRUNTIME_ROOT} ENV ONNXRUNTIME_ROOT
+  PATH_SUFFIXES lib lib64
+)
+
+if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
+  message(FATAL_ERROR
+    "ONNX Runtime was not found. Install ONNX Runtime and configure with "
+    "-DONNXRUNTIME_ROOT=/path/to/onnxruntime (the directory containing include/ and lib/)."
+  )
+endif()
+
+message(STATUS "ONNX Runtime include directory: ${ONNXRUNTIME_INCLUDE_DIR}")
+message(STATUS "ONNX Runtime library: ${ONNXRUNTIME_LIBRARY}")
+
+
+
 # Setup GNUInstallDirs for installation:
 #----------------------------------------------------------------------------
 include(GNUInstallDirs)
@@ -51,7 +81,7 @@ endif()
 ##----------------------------------------------------------------------------
 ## Set the sources which have a corresponding .h file here
 set(sources MPDModule.cxx MPDModuleVMEv4.cxx SBSBigBite.cxx
-  SBSGEMTrackerBase.cxx SBSGEMSpectrometerTracker.cxx SBSGEMModule.cxx SBSGEMPolarimeterTracker.cxx
+  SBSGEMTrackerBase.cxx SBSGEMSpectrometerTracker.cxx SBSGEMModule.cxx SBSGEMPolarimeterTracker.cxx SBSGEMMLHitFinder.cxx SBSGEMMLPreprocessor.cxx SBSGEMMLPostprocessor.cxx ##ONNX implementation - Bhasitha
   SBSBBShower.cxx SBSBBTotalShower.cxx 
   SBSCDet.cxx SBSCDet_Hit.cxx SBSScintHit.cxx SBSScintPMT.cxx 
   SBSTimingHodoscope.cxx SBSScintBar.cxx SBSTdcHit.cxx SBSAdcHit.cxx
@@ -159,7 +189,15 @@ endif()
 
 
 
-include_directories(${ROOT_INCLUDE_DIR} ${Podd_INCLUDE_DIR} ${PROJECT_SOURCE_DIR})
+## include_directories(${ROOT_INCLUDE_DIR} ${Podd_INCLUDE_DIR} ${PROJECT_SOURCE_DIR}) ##ONNX implementation - Bhasitha
+##ONNX implementation - Bhasitha
+include_directories(
+  ${ROOT_INCLUDE_DIR}
+  ${Podd_INCLUDE_DIR}
+  ${PROJECT_SOURCE_DIR}
+  ${ONNXRUNTIME_INCLUDE_DIR}
+)
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ROOT_CXX_FLAGS}")
 
 ## Generate the ROOT dictionary
@@ -169,7 +207,13 @@ ROOT_GENERATE_DICTIONARY( ${PROJECT_DICTIONARY} ${headers} OPTIONS -I${PROJECT_S
 ## Create the library
 add_library(${PROJECT_NAME} SHARED ${sources} ${headers} ${PROJECT_DICTIONARY}.cxx )
 set_property(TARGET ${PROJECT_NAME} APPEND_STRING PROPERTY LINK_FLAGS " ${SBS_LINKFLAGS}")
-target_link_libraries(${PROJECT_NAME} ${ROOT_LIBRARIES})
+## target_link_libraries(${PROJECT_NAME} ${ROOT_LIBRARIES}) ##ONNX implementation - Bhasitha
+##ONNX implementation - Bhasitha
+target_link_libraries(
+  ${PROJECT_NAME}
+  ${ROOT_LIBRARIES}
+  ${ONNXRUNTIME_LIBRARY}
+)
 #message(FATAL_ERROR "${PROJECT_NAME} PRIVATE ${SBSEXTRADEFINES}")
 ## Get a list of preprocessor flags to pass to the targets
 foreach(_def ${SBSEXTRADEF_LIST})
