@@ -8,7 +8,17 @@
 #include <array>
 #include <deque>
 
+//For ML inference: Bhasitha
+#include "SBSGEMMLPreprocessor.h"
+#include "SBSGEMMLPostprocessor.h"
+#include <memory>
+#include <string>
+
 //using namespace std;
+
+//For ML inference: Bhasitha
+class SBSGEMMLHitFinder;
+struct SBSGEMMLPostprocessResult;
 
 class THaDetectorBase;
 class THaEvData;
@@ -44,6 +54,7 @@ struct sbsgemhit_t { //2D reconstructed hits
   Bool_t keep;     //Should this cluster be considered for tracking? We use this variable to implement "cluster quality" cuts (thresholds, XY ADC and time correlation, etc.)
   Bool_t ontrack;  //Is this cluster on any track?
   Bool_t highquality; //is this a "high quality" hit?
+  Bool_t isMLhit; // is this a hit from a ML predicted 'blob'? 
   Int_t trackidx; //Index of track containing this cluster (within the array of tracks found by the parent SBSGEMTracker
   UInt_t iuclust;  //Index in (1D) U cluster array of the "U" cluster used to define this 2D hit.
   UInt_t ivclust;  //Index in (1D) V cluster array of the "V" cluster used to define this 2D hit.
@@ -149,6 +160,57 @@ struct sbsgemcluster_t {  //1D clusters;
 
 //Is the use of THaSubDetector appropriate here? Or should we just use THaDetector or similar?
   
+
+
+
+
+
+// ============================================================
+// ML reconstructed 2D hit candidate - Bhasitha
+//
+// This is NOT yet an SBS conventional sbsgemhit_t.
+// It is an intermediate ML geometry result.
+// ============================================================
+
+struct SBSGEMMLHitCandidate {
+
+  int blob_id = -1;
+
+  // Physical strip IDs selected by ML postprocessing
+  int u_strip = -1;
+  int v_strip = -1;
+
+  // Physical U/V coordinates in module-local strip coordinates
+  double u = 0.0;
+  double v = 0.0;
+
+  // Module-local X/Y coordinates
+  double x = 0.0;
+  double y = 0.0;
+
+  // Blob information
+  int area = 0;
+  int real_area = 0;
+
+  // Geometry checks
+  bool inside_active_area = false;
+  bool inside_roi = false;
+
+  // Index of ROI rectangle that accepted this candidate.
+  // -1 means none.
+  int roi_index = -1;
+
+  // Final decision for this stage
+  bool accepted = false;
+
+  // Sorted unique physical-strip projections of cells.
+  std::vector<int> u_strips;
+  std::vector<int> v_strips;
+};
+
+
+
+  
 class SBSGEMModule : public THaSubDetector {
  public:
 
@@ -183,6 +245,28 @@ class SBSGEMModule : public THaSubDetector {
   void find_2Dhits(); // Version with no arguments assumes no constraint points
   //void find_2Dhits(TVector2 constraint_center, TVector2 constraint_width); // Version with TVector2 arguments 
 
+
+  // ============================================================
+  // ML: collect decoded U/V strips that are relevant to SBS ROI - Bhasitha
+  // ============================================================
+
+  bool CollectMLROIStrips( std::vector<SBSGEMMLStrip>& u_strips, std::vector<SBSGEMMLStrip>& v_strips);
+
+  // ============================================================
+  // ML: convert predicted blobs into physical 2D hit candidates
+  // and apply active-area + exact X/Y ROI checks.
+  // ============================================================
+
+  bool BuildMLHitCandidates( const SBSGEMMLPostprocessResult& post, std::vector<SBSGEMMLHitCandidate>& candidates );
+
+  // ML: generate candidate U and V, 1D clusters from the ML hit candidates - Anu
+  bool make_cluster_1D_ML( const std::vector<int>& input_strips, SBSGEM::GEMaxis_t axis, sbsgemcluster_t& clusttemp ); 
+
+  bool make_2Dhit_ML( UInt_t iu, UInt_t iv, const SBSGEMMLBlob& blob, sbsgemhit_t& hittemp );
+  
+  // ML: Single method that handles U/V clustering and 2D hit candidate generation from ML postprocessing results - Anu
+  bool Make1DClustersAnd2DHitsFromMLblobs( const std::vector<SBSGEMMLBlob>& blobs );
+
   // fill the 2D hit arrays from the 1D cluster arrays:
   void fill_2D_hit_arrays(); 
 
@@ -209,6 +293,9 @@ class SBSGEMModule : public THaSubDetector {
 
   //function to convert from APV channel number to strip number ordered by position:
   Int_t GetStripNumber( UInt_t rawstrip, UInt_t pos, UInt_t invert );
+
+  //functio to output strip number ordered by position when the position is given the r/o plane coordinates (U/V):
+  Int_t GetStripNumberFromPos( Double_t hitpos, SBSGEM::GEMaxis_t axis );
 
   void PrintPedestals( std::ofstream &dbfile_CM, std::ofstream &daqfile_ped, std::ofstream &daqfile_CM );
   void PrintRawADCrange( std::ofstream &dbfile_ADCrange );
@@ -427,6 +514,13 @@ class SBSGEMModule : public THaSubDetector {
   
   std::vector<Double_t> fxcmin, fxcmax;
   std::vector<Double_t> fycmin, fycmax;
+
+  // Variables to output min and max physical strip numbers of the constraint region. Main use case is to be utilized to define the constraint region for ML training of the hit-finding model.
+  Int_t fStripUc_min, fStripUc_max;
+  Int_t fStripVc_min, fStripVc_max;
+  Bool_t fIsROIinMod; // Is the ROI defined by constraint regions within the module?
+  // Variables to output min and max values of the constraint region 
+  Double_t fROI_xmin, fROI_xmax, fROI_ymin, fROI_ymax;
 
   //Arrays to temporarily hold raw data from ONE APV card:
   std::vector<UInt_t> fStripAPV;
@@ -849,6 +943,21 @@ class SBSGEMModule : public THaSubDetector {
 
   // TClonesArray *hpedestal_subtracted_ADCs_by_strip_sampleU;
   // TClonesArray *hpedestal_subtracted_ADCs_by_strip_sampleV;
+  
+  // ============================================================
+  // ML hit finder
+  // ============================================================
+
+  protected:
+
+    Bool_t fUseMLHitFinder;
+    Bool_t fMLHitFinderInitialized;
+
+    std::string fMLModelPath;
+
+    std::unique_ptr<SBSGEMMLHitFinder> fMLHitFinder; //!
+
+  public:
   
   ClassDef(SBSGEMModule,0);
 
