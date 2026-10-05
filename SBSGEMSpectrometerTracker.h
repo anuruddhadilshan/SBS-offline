@@ -11,6 +11,7 @@ class SBSGEMPlane;
 class THaCrateMap;
 class THaTrack;
 class TClonesArray;
+class THaBenchmark;
 //class THaSpectrometer;
 
 class SBSGEMSpectrometerTracker : public THaTrackingDetector, public SBSGEMTrackerBase {
@@ -52,6 +53,8 @@ class SBSGEMSpectrometerTracker : public THaTrackingDetector, public SBSGEMTrack
 	
   //THaCrateMap *fCrateMap; //Does this do anything? Not as far as I can tell. I wish someone would have commented about why they added this. AJRP
   ClassDef(SBSGEMSpectrometerTracker, 0);
+
+  THaBenchmark* fBench;  // Benchmarking object to time the tracking algorithm
 
 };
 

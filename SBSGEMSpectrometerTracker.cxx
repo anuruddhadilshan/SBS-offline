@@ -14,6 +14,8 @@
 #include "TClonesArray.h"
 #include "Helper.h"
 
+#include "THaBenchmark.h"
+
 using namespace Podd;
 
 SBSGEMSpectrometerTracker::SBSGEMSpectrometerTracker( const char* name, const char* desc, THaApparatus* app ):
@@ -50,11 +52,14 @@ SBSGEMSpectrometerTracker::SBSGEMSpectrometerTracker( const char* name, const ch
   fdthtarcut = 0.05;
   fdphtar0 = 0.0;
   fdphtarcut = 0.05;
+
+  fBench = new THaBenchmark();
 }
 
 SBSGEMSpectrometerTracker::~SBSGEMSpectrometerTracker(){
   fTestTracks->Clear("C");
   delete fTestTracks;
+  delete fBench;
 }
 
 
@@ -370,6 +375,8 @@ Int_t SBSGEMSpectrometerTracker::Begin( THaRunBase* run ) {
   
   InitEfficiencyHistos(detname.Data()); //create efficiency histograms (see SBSGEMTrackerBase)
   
+  fBench->Reset();
+  fBench->Begin("Total_GemTracking"); // Start timing the total tracking time
   
   return 0;
 }
@@ -624,6 +631,12 @@ Int_t SBSGEMSpectrometerTracker::End( THaRunBase* run ){
     }
     frawADCrangefile.close();
   }
+
+  fBench->Stop("Total_GemTracking");    
+  std::cout << "\n[SBSGEMSpectrometerTracker::End] GEM tracking times:" << std::endl;
+  std::vector<TString> benchnames = { "Hit_Reconstruction", "Track_Finding" }; //, "Total_GemTracking" };
+  fBench->PrintByName(benchnames);
+  std::cout << std::endl;
   
   return 0;
 }
@@ -836,9 +849,13 @@ Int_t SBSGEMSpectrometerTracker::CoarseTrack( TClonesArray& tracks ){
     //If no external constraints on the track search region are being used/defined, we do the track-finding in CoarseTrack (before processing all the THaNonTrackingDetectors in the parent spectrometer):
     //std::cout << "calling find_tracks..." << std::endl;
     //Add a separate call to "hit_reconstruction" here:
+    fBench->Begin("Hit_Reconstruction"); // Start timing the hit reconstruction
     if( !fclustering_done ) hit_reconstruction();
-    
+    fBench->Stop("Hit_Reconstruction"); // Pause timing the hit reconstruction
+
+    fBench->Begin("Track_Finding"); // Start timing the track finding
     if( !ftracking_done ) find_tracks();
+    fBench->Stop("Track_Finding"); // Pause timing the track finding
 
     for( int itrack=0; itrack<fNtracks_found; itrack++ ){
       THaTrack *Track = AddTrack( tracks, fXtrack[itrack], fYtrack[itrack], fXptrack[itrack], fYptrack[itrack] );
@@ -874,9 +891,13 @@ Int_t SBSGEMSpectrometerTracker::FineTrack( TClonesArray& tracks ){
       // std::cout << "[SBSGEMSpectrometerTracker::FineTrack()]: name = "
       // 		<< GetName() << std::endl;
 
+      fBench->Begin("Hit_Reconstruction"); // Start timing the hit reconstruction
       if( !fclustering_done ) hit_reconstruction();
+      fBench->Stop("Hit_Reconstruction"); // Pause timing the hit reconstruction
       
+      fBench->Begin("Track_Finding"); // Start timing the track finding
       if( !ftracking_done ) find_tracks();
+      fBench->Stop("Track_Finding"); // Pause timing the track finding
 
       //We don't necessarily know 
     

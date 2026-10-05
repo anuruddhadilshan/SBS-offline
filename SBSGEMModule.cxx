@@ -1573,7 +1573,8 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
     { "hit.hit_iuclust", "index in u cluster array", "fHits.iuclust" },
     { "hit.hit_ivclust", "index in v cluster array", "fHits.ivclust" },
     { "hit.ontrack", "hit is on track", "fHits.ontrack" },
-    {"hit.isMLhit", "is this a ML hit?", "fHits.isMLhit"},
+    { "hit.keep", "hits filtered from filter_2Dhits() method", "fHits.keep"},
+    { "hit.isMLhit", "is this a ML hit?", "fHits.isMLhit"},
     { nullptr },
   };
 
@@ -3336,9 +3337,11 @@ bool SBSGEMModule::CollectMLROIStrips(
     // earlier in find_2Dhits().
     // --------------------------------------------------------
 
-    if( !fIsROIinMod ){
-        return false;
-    }
+    // ADR: commenting out this check because we want to allow the ML preprocessor to run even if the ROI is outside the module 
+    // or we don not have any valid constraints so that we can still collect strips for ML training.
+    // if( !fIsROIinMod ){
+    //     return false;
+    // }
 
 
     // --------------------------------------------------------
@@ -4989,7 +4992,7 @@ void SBSGEMModule::find_2Dhits(){
   // ============================================================
 
   if( has_valid_constraints ){
-
+    
     // Temporary calculation sentinels are safe here because the
     // loop is guaranteed to execute at least once.
     xmin =  10000000.0;
@@ -5179,9 +5182,16 @@ void SBSGEMModule::find_2Dhits(){
       if( fStripVc_max >= static_cast<int>(fNstripsV) )
         fStripVc_max = fNstripsV - 1;
     }
+  }  else {
+    // ADR: But if there are no valid constraints, we should still be able to use the ML hit finder.
+    // The conventional reconstruction will fall back to finding hits on the entire module. So let's do the same for ML hit finder.
+    fStripUc_min = 0;
+    fStripUc_max = fNstripsU - 1;
+    fStripVc_min = 0;
+    fStripVc_max = fNstripsV - 1;
   }
 
-
+  
   // ============================================================
   // Decide whether ML is applicable to THIS EVENT.
   //
@@ -5199,14 +5209,20 @@ void SBSGEMModule::find_2Dhits(){
   const bool do_ML_hit_finding =
       fUseMLHitFinder &&
       fMLHitFinderInitialized &&
-      fMLHitFinder &&
-      has_valid_constraints &&
-      fIsROIinMod;
+      fMLHitFinder; // &&
+      //has_valid_constraints &&
+      //fIsROIinMod;
+  
+  // if ( fUseMLHitFinder && fMLHitFinderInitialized && fMLHitFinder && !has_valid_constraints){    
+  //   std::cerr << "[SBSGEMModule::find_2Dhits] WARNING: ML hit finder is enabled, but this event has no valid constraints. ML will be skipped for this event." << std::endl;
+  // }  else if ( fUseMLHitFinder && fMLHitFinderInitialized && fMLHitFinder && !fIsROIinMod){
+  //   std::cerr << "[SBSGEMModule::find_2Dhits] WARNING: ML hit finder is enabled, but the ROI does not overlap this module. ML will be skipped for this event." << std::endl;
+  // }
 
   bool success_ML_hit_finding = false;
     
   if( do_ML_hit_finding ){
-
+    //std::cout << "SBSGEMModule::find_2Dhits(): running ML hit finding for module " << GetName() << std::endl;
     // ============================================================
     // ML PERFORMANCE TIMING #TIMING Bhasitha
     // ============================================================
@@ -5888,7 +5904,7 @@ void SBSGEMModule::find_2Dhits(){
 
         timing_H = ml_input.H; // #TIMING Bhasitha
         timing_W = ml_input.W; // #TIMING Bhasitha
-
+        std::cout << "[ML DEBUG] ml_input.H=" << ml_input.H << " ml_input.W=" << ml_input.W << " pixel_size=" << ml_input.H*ml_input.W << std::endl; // Pixel size?
         std::vector<float> ml_logits;
 
         const auto ml_inference_t0 = MLClock::now(); // #TIMING Bhasitha
@@ -6074,6 +6090,7 @@ void SBSGEMModule::find_2Dhits(){
 
 
   if ( !do_ML_hit_finding /*|| !success_ML_hit_finding*/ ){
+    //std::cout << "SBSGEMModule::find_2Dhits(): running conventional hit finding for module " << GetName() << std::endl;
   // Let's handle this the following way. We only want to call 1D cluster-finding and 2D hit finding ONCE, regardless of
   // the number of constraints! 
   // This means that if we want to handle MORE than one constraint point, we MUST set fStoreAll1Dclusters to true
