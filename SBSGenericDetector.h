@@ -27,6 +27,7 @@
 #include "SBSElement.h"
 #include "Helper.h"
 #include "TH1D.h"
+#include "TH2D.h"
 #include "THaRunBase.h"
 
 namespace SBSModeADC {
@@ -140,6 +141,7 @@ public:
   void SetDisableRefTDC(Bool_t b) { fDisableRefTDC = b; }
   void SetStoreRawHits(Bool_t var) { fStoreRawHits = var; }
   void SetStoreEmptyElements(Bool_t b) { fStoreEmptyElements = b; }
+  void SetEnableMultiPulse(Bool_t b) { fEnableMultiPulse = b; }
 
   Bool_t WithTDC() { return fModeTDC != SBSModeTDC::kNone; };
   Bool_t WithADC() { return fModeADC != SBSModeADC::kNone; };
@@ -199,6 +201,7 @@ protected:
   Bool_t fIsMC; // flag to indicate if data are simulated;
   Int_t fF1_RollOver;
   Int_t fF1_TimeWindow;
+  Bool_t fEnableMultiPulse;
   
   // Mapping (see also fDetMap)
   UShort_t   fChanMapStart; ///< Starting number for element number (i.e. 0 or 1)
@@ -243,7 +246,8 @@ protected:
   Bool_t fDecodeRFtime;
   Bool_t fDecodeTrigTime;
 
-  TH1D *hdTRF; //histogram to hold RF time differences (for TDC calibration purposes):
+  TH1D *hdTRF; //histogram to hold RF time differences (for TDC calibration purposes)
+  TH2D *hFADCsampPedDiff;
   
   Double_t   fRFtime;    //Decoded accelerator RF time
   Double_t   fTrigTime;  //Decoded "trigger" time (for copy of "main" trigger (usually either BigBite singles or coincidence))

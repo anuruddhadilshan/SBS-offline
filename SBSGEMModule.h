@@ -118,6 +118,11 @@ struct sbsgemcluster_t {  //1D clusters;
   Double_t t_mean_fit; //cluster-summed "fit" time.
   //Do we want to store the individual strip ADC Samples with the 1D clustering results? I don't think so; as these can be accessed via the decoded strip info.
   Double_t clustergoodADCsum; // MC only. Sum of good ADCs over all samples on all strips (that have good ADC).
+  //Do we want to store cluster-level correlation coefficient with "expected" signal shape? probably yes
+  
+  //The following variables will hold the (unweighted and weighted) correlation coefficients of the cluster-summed ADC samples with the expected pulse shape:
+  Double_t uTScorr; 
+  Double_t wTScorr; 
   
   std::vector<UInt_t> hitindex; //position in decoded hit array of each strip in the cluster:
   UInt_t rawstrip; //Raw APV strip number before decoding 
@@ -199,6 +204,13 @@ class SBSGEMModule : public THaSubDetector {
   //Utility function to calculate correlation coefficient between U and V time samples:
   Double_t CorrCoeff( int nsamples, const std::vector<double> &Usamples, const std::vector<double> &Vsamples, int firstsample=0 );
   Double_t StripTSchi2( int hitindex );
+
+  //Another utility function to calculate correlation coefficient between two arbitrary vectors with weights
+  Double_t CorrCoeffWeighted( int nsamples, const std::vector<double> &Vec1, const std::vector<double> &Vec2, const std::vector<double> &Weights );
+
+  //This method will calculate the correlation coefficient of the strip's time samples with the "expected" pulse shape as a function of trigger phase:
+  Double_t CalcStripTScorr_vs_TrigPhase( int hitindex, UInt_t trigphase, bool weighted=false ); 
+  void CalcClustTScorr_vs_TrigPhase( sbsgemcluster_t &clus, SBSGEM::GEMaxis_t axis );
   
   //Utility functions to compute "module local" X and Y coordinates from U and V (strip coordinates) to "transport" coordinates (x,y) and vice-versa:
   TVector2 UVtoXY( TVector2 UV );
@@ -264,6 +276,7 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<Double_t> fCommonModeRollingRMS_by_APV;
   std::vector<UInt_t> fNeventsRollingAverage_by_APV;
 
+  std::vector<Int_t> fNwarnBadCM_by_APV;
   
   //These arrays will hold the results for all full readout events
   std::vector<Double_t> fRawADCminResult_by_APV;
@@ -302,6 +315,7 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<UInt_t> fTfine_by_APV; //"Fine time stamp" by APV:
   std::vector<UInt_t> fEventCount_by_APV; //MPD event counter by APV:
   std::vector<double> fTimeStamp_ns_by_APV; //Coarse time stamp - T0 + fine time stamp % 6
+  std::vector<double> fTdiff_mpdcoarse_TS_by_APV; // Coarse time difference between MPD and TS timestamps.
   
   //What should we use to hold the rolling average of common-mode means?
   
@@ -346,6 +360,24 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<double> fGoodStrip_TSfrac_sigma; //
 
   Double_t fStripTSchi2Cut;
+
+  //TS frac vs trigger phase parameters:
+  bool fTSfracTrigPhaseIsInitialized; //set to true on successful initialization!
+  bool fUseTSfracTrigPhaseCorr; // implement threshold on correlation between GEM pulse shape and trigger-phase-dependent expected shape;
+  Int_t fTSfracTrigPhaseCorrFlag; // flag controlling behavior of TSfrac vs trig phase correlation cut; <0 = disabled, 0 (>0) = use unweighted (weighted) correlation coefficient.
+  //as much as we hate to add even more parameters to this class, here we go:
+  
+  //Each of the following arrays is expected to contain 36 parameters per module (6 time samples times 6 trigger phase values): 
+  std::vector<double> fTSfrac_vs_TrigPhase_Umean;
+  std::vector<double> fTSfrac_vs_TrigPhase_Vmean;
+  std::vector<double> fTSfrac_vs_TrigPhase_Usigma;
+  std::vector<double> fTSfrac_vs_TrigPhase_Vsigma;
+
+  //Each of the following arrays is expected to contain 6 parameters per module (6 trigger phase values x 1 threshold for weighted and unweighted correlation coefficient)
+  std::vector<double> fThreshU_wTScorr_vs_TrigPhase; //Thresholds for weighted correlation coefficient
+  std::vector<double> fThreshV_wTScorr_vs_TrigPhase; 
+  std::vector<double> fThreshU_uTScorr_vs_TrigPhase; //Thresholds for unweighted correlation coefficient
+  std::vector<double> fThreshV_uTScorr_vs_TrigPhase;
   
   
   //In principle we will eventually also require some time walk corrections
@@ -378,6 +410,8 @@ class SBSGEMModule : public THaSubDetector {
   UInt_t fChan_MPD_EventCount;
   UInt_t fChan_MPD_Debug;
 
+  UInt_t fTrigPhase; //store the result of decoding the trigger phase since it's needed by the clustering methods to retrieve trigger-phase-dependent threshold
+  
   Double_t fTrigTime; //trigger time; to be decoded once by parent class
 
   Double_t fMaxTrigTimeCorrection; //Maximum (absolute) correction to be applied to strip times based on trigger time (Default = 25 ns)
@@ -499,7 +533,8 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<UInt_t> fStrip_ENABLE_CM; //Flag to indicate whether CM was done online or offline for this strip
   std::vector<UInt_t> fStrip_CM_GOOD; //Flag to indicate whether online CM succeeded
   std::vector<UInt_t> fStrip_BUILD_ALL_SAMPLES; //Flag to indicate whether online zero suppression was enabled 
-  
+  std::vector<Double_t> fStripTScorr_w; // (weighted) correlation coefficient of this strip's time samples with expected time dependence (trigger phase dependent!)
+  std::vector<Double_t> fStripTScorr_u; // (unweighted) correlation coefficient of this strip's time samples with expected time dependence (trigger phase dependent!)
   //because the cut definition machinery sucks, let's define some more booleans:
   std::vector<UInt_t> fStripUonTrack;
   std::vector<UInt_t> fStripVonTrack;
@@ -532,6 +567,8 @@ class SBSGEMModule : public THaSubDetector {
   UInt_t fNclustV_neg; // number of negative V clusters found
   UInt_t fNclustU_total; // Number of U clusters found in entire active area, without enforcing search region constraint
   UInt_t fNclustV_total; // Number of U clusters found in entire active area, without enforcing search region constraint
+  UInt_t fNclustU_good; // number of U clusters with 'keep==true', to be used in the 2D hit formation.
+  UInt_t fNclustV_good; // number of V clusters with 'keep==true', to be used in the 2D hit formation.
   std::vector<sbsgemcluster_t> fUclusters; //1D clusters along "U" direction
   std::vector<Int_t> fUGoodClustersIndex;  //Vector holding index of good clusters from the fUclusters to be considered for 2D hit reconstruction.
   std::vector<sbsgemcluster_t> fVclusters; //1D clusters along "V" direction
@@ -542,6 +579,9 @@ class SBSGEMModule : public THaSubDetector {
   UInt_t fNclustV_goodADC; // number of good-ADC V clusters found.
   std::vector<sbsgemcluster_t> fUclusters_goodADC; // 1D good-ADC clusters along "U" direction.
   std::vector<sbsgemcluster_t> fVclusters_goodADC; // 1D good-ADC clusters along "V" direction.
+  std::vector<Int_t> fGoodUclustersIndex;  //Vector holding index of good clusters from the fUclusters to be considered for 2D hit reconstruction.
+  std::vector<sbsgemcluster_t> fVclusters; //1D clusters along "V" direction
+  std::vector<Int_t> fGoodVclustersIndex;  //Vector holding index of good clusters from the fVclusters to be considered for 2D hit reconstruction.
 
   UInt_t fMAX2DHITS; // Max. 2d hits per module, to limit memory usage:
   UInt_t fN2Dhits; // number of 2D hits found in region of interest:

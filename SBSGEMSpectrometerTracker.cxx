@@ -139,7 +139,9 @@ Int_t SBSGEMSpectrometerTracker::ReadDatabase( const TDatime& date ){
 
   int nontrackmode = fNonTrackingMode ? 1 : 0;
 
-
+  int dumprawadcrange = fDumpRawADCrange ? 1 : 0;
+  
+  int storeall_1Dclusters = fStoreAll1Dclusters ? 1 : 0;
   //  std::vector<int> mingoodhits; 
   //std::vector<double> chi2cut_space;
   //std::vector<double> chi2cut_hits;
@@ -150,6 +152,7 @@ Int_t SBSGEMSpectrometerTracker::ReadDatabase( const TDatime& date ){
     { "cmfile",  &fcmfilename, kString, 0, 1 },
     { "rawADCrangefile", &frawADCrangefilename, kString, 0, 1 },
     { "is_mc",        &mc_flag,    kInt, 0, 1, 1 }, //NOTE: is_mc can also be defined via the constructor in the replay script
+    { "storeall_1Dclusters", &storeall_1Dclusters, kInt, 0, 1, 1 },
     { "minhitsontrack", &fMinHitsOnTrack, kInt, 0, 1},
     { "maxhitcombos", &fMaxHitCombinations, kInt, 0, 1},
     { "maxhitcombos_inner", &fMaxHitCombinations_InnerLayers, kInt, 0, 1},
@@ -169,7 +172,7 @@ Int_t SBSGEMSpectrometerTracker::ReadDatabase( const TDatime& date ){
     { "do_neg_signal_study", &negsignalstudy_flag, kUInt, 0, 1, 1}, //(optional, search): toggle doing negative signal analysis
     { "do_efficiencies", &doefficiency_flag, kInt, 0, 1, 1},
     { "dump_geometry_info", &fDumpGeometryInfo, kInt, 0, 1, 1},
-    { "dump_rawADCrange", &fDumpRawADCrange, kInt, 0, 1, 1 },
+    { "dump_rawADCrange", &dumprawadcrange, kInt, 0, 1, 1 },
     { "efficiency_bin_width_1D", &fBinSize_efficiency1D, kDouble, 0, 1, 1 },
     { "efficiency_bin_width_2D", &fBinSize_efficiency2D, kDouble, 0, 1, 1 },
     { "xptar_min", &fxptarmin_track, kDouble, 0, 1, 1},
@@ -240,6 +243,7 @@ Int_t SBSGEMSpectrometerTracker::ReadDatabase( const TDatime& date ){
   fNegSignalStudy = negsignalstudy_flag != 0;
 
   fIsMC = (mc_flag != 0);
+  fStoreAll1Dclusters = (storeall_1Dclusters != 0);
   fTryFastTrack = (fasttrack_flag != 0);
 
   fUseSlopeConstraint = (useslopeconstraint != 0 );
@@ -272,6 +276,8 @@ Int_t SBSGEMSpectrometerTracker::ReadDatabase( const TDatime& date ){
     Error("", "[SBSGEMSpectrometerTracker::ReadDatabase] No modules defined");
   }
 
+  fDumpRawADCrange = ( dumprawadcrange != 0 );
+  
   int modcounter = 0;
 
   
@@ -781,6 +787,14 @@ Int_t SBSGEMSpectrometerTracker::DefineVariables( EMode mode ){
     { "hit.TSprob_Umax", "Max U strip TS prob", "fHitTSprobMaxUstrip" },
     { "hit.TSprob_Vmax", "Max V strip TS prob", "fHitTSprobMaxVstrip" },
     { "hit.Tavg_corr", "Corrected hit time (ns)", "fHitTavgCorrected" },
+    { "hit.uTScorr_MaxStripU", "Max U strip unweighted TS corr. coeff.", "fHit_uTScorr_MaxUstrip" },
+    { "hit.uTScorr_MaxStripV", "Max V strip unweighted TS corr. coeff.", "fHit_uTScorr_MaxVstrip" },
+    { "hit.wTScorr_MaxStripU", "Max U strip weighted TS corr. coeff.", "fHit_wTScorr_MaxUstrip" },
+    { "hit.wTScorr_MaxStripV", "Max V strip weighted TS corr. coeff.", "fHit_wTScorr_MaxVstrip" },
+    { "hit.uTScorr_Uclust", "U cluster unweighted TS corr. coeff.", "fHit_uTScorr_Uclust" },
+    { "hit.uTScorr_Vclust", "V cluster unweighted TS corr. coeff.", "fHit_uTScorr_Vclust" },
+    { "hit.wTScorr_Uclust", "U cluster weighted TS corr. coeff.", "fHit_wTScorr_Uclust" },
+    { "hit.wTScorr_Vclust", "V cluster weighted TS corr. coeff.", "fHit_wTScorr_Vclust" },
     { "hit.Ugain","Applied gain factor U", "fHitUgain" },
     { "hit.Vgain","Applied gain factor V", "fHitVgain" },
     { "hit.crate_U", "VTP ROC ID of max U strip", "fHitCrate_U" },

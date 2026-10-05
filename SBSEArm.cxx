@@ -152,7 +152,7 @@ THaSpectrometer( name, description )
   fUseDynamicConstraint = false;
 
   fAnalyzerThick = 0.5588; //meters
-  //fSigmaZclose = 0.0015; //about 1.5 mm by default:
+  fSigmaZclose = 0.0015; //about 1.5 mm by default:
   
   fNbinsZBackTrackerConstraint = 1;
 
@@ -187,6 +187,12 @@ Int_t SBSEArm::ReadRunDatabase( const TDatime &date ){
   fOpticsOrigin.SetXYZ( 0.0, 0.0, fMagDist + 2.085 );
 
   fMaxFPPscatteringAngle = asin( 1.5/std::max(1.5,GetPcentral()) );
+
+  //After HCAL distance is set, define default values for dynamic constraint slope and offset:
+  fDynamicConstraintSlopeX = 1.0/fHCALdist;
+  fDynamicConstraintSlopeY = 1.0/fHCALdist;
+  fDynamicConstraintOffsetX = 0.0;
+  fDynamicConstraintOffsetY = 0.0;
   
   return kOK;
 }
@@ -272,6 +278,7 @@ Int_t SBSEArm::ReadDatabase( const TDatime& date )
     { "forwardoptics_order", &fForwardOpticsOrder, kInt, 0, 1, 1 },
     { "forwardoptics_parameters", &foptics_param, kDoubleV, 0, 1, 1 },
     { "analyzerthick", &fAnalyzerThick, kDouble, 0, 1, 1 },
+    { "sigmazclose", &fSigmaZclose, kDouble, 0, 1, 1 },
     { "nbinsz_fcp", &fNbinsZBackTrackerConstraint, kInt, 0, 1, 1 },
     {0}
   };
@@ -391,6 +398,8 @@ Int_t SBSEArm::ReadDatabase( const TDatime& date )
       f_oj[i] = int(optics_param[9*i+7]);
       f_oi[i] = int(optics_param[9*i+8]);
     }
+
+    std::cout << "\n\n" << "SBS OPTICS initialization check: fb_pinv[0] = 0.3 * BdL = " << fb_pinv[0] << std::endl << std::endl;
   }
 
   //This code for forward optics modeling is yet-another copy-paste job from SBSBigBite!
@@ -446,6 +455,8 @@ Int_t SBSEArm::ReadDatabase( const TDatime& date )
       f_foj[i] = int(foptics_param[9*i+7]);
       f_foi[i] = int(foptics_param[9*i+8]);
     }
+
+    std::cout << "\n\n" << "SBS FORWARD OPTICS initialization check: fb_xfp[1] = " << fb_xfp[1] << std::endl << std::endl;
   }
   
   fIsInit = true;
@@ -963,17 +974,32 @@ Int_t SBSEArm::CoarseReconstruct()
   
   fHCALtime_ADC = HCalClusters[i_max]->GetAtime();
   fHCALtime_TDC = HCalClusters[i_max]->GetTDCtime();
+
+  // For back constraint point definitions, we DO want to offset
+  // the HCAL cluster coordinates by the "origin" coordinates. WHY? Aren't the X and Y offsets
+  // redundant in this case with the user-configurable constraint-centering offsets from the
+  // SBS DB? When there is a large vertical offset of the GEM coordinate origin as in GEP
+  // we want to include the HCAL origin coordinates in the definition of the back constraint points,
+  // so that the required constraint centering offset is as close to zero as possible:
   
   x_bcp = HCalClusters[i_max]->GetX() + HCal->GetOrigin().X();
   y_bcp = HCalClusters[i_max]->GetY() + HCal->GetOrigin().Y();
-  z_bcp = HCal->GetOrigin().Z();
+  z_bcp = HCal->GetOrigin().Z(); 
 
-  //Constraint "slopes" for dynamic constraint point calculation:
-  double thcp = HCalClusters[i_max]->GetX() * fDynamicConstraintSlopeX + fDynamicConstraintOffsetX;
-  double phcp = HCalClusters[i_max]->GetY() * fDynamicConstraintSlopeY + fDynamicConstraintOffsetY;    
+  // Constraint "slopes" for dynamic constraint point calculation:
+  // Here we also include the "origin" coordinates in the calculation, despite the risk of including too many redundant "offset" parameters:
+  //NOTE: the following will lead to incorrect angles for a GEP context, but this calculation isn't actually used in a GEP context anyway! 
+  double thcp = x_bcp * fDynamicConstraintSlopeX + fDynamicConstraintOffsetX;
+  double phcp = y_bcp * fDynamicConstraintSlopeY + fDynamicConstraintOffsetY;    
   
-  fHCALtheta_n = HCalClusters[i_max]->GetX()/fHCALdist;
-  fHCALphi_n = HCalClusters[i_max]->GetY()/fHCALdist;
+  // Change: DO add HCAL "origin" coordinates to these variables; the
+  // "origin" coordinates are assumed to be defined in the "GEM-local" system, whereas the
+  // HCAL "X" and "Y" coordinates are defined in a "spectrometer-local" coordinate system, where X is centered at beam height.
+  // The only experiment for which this might cause confusion is GEP, in which the GEM-local coordinate system origin is 16.5 cm above beam height!
+  // It may also affect GEN Kin. 3, for which HCAL is at a more forward "angle" 21.6 deg, than SBS (22.1 deg)
+  
+  fHCALtheta_n = x_bcp/fHCALdist;
+  fHCALphi_n = y_bcp/fHCALdist;
 
   TVector3 HCALdir_global; 
 
@@ -999,7 +1025,7 @@ Int_t SBSEArm::CoarseReconstruct()
 					  fBackConstraintWidthY[0] );
   }
 
-  if( fGEPtrackingMode ) return 0; //all constraint-point setting in GEP mode will be done in the region-of-interest module
+  if( fGEPtrackingMode ) return 0; //all constraint-point setting in the GEP tracking mode will be done via the region-of-interest module
   
   //x_fcp = fGEMorigin.X();
   //y_fcp = fGEMorigin.Y();
@@ -1023,6 +1049,10 @@ Int_t SBSEArm::CoarseReconstruct()
       //double thcp = fDynamicConstraintSlopeX * (x_bcp) + fDynamicConstraintOffsetX;
       //double phcp = fDynamicConstraintSlopeY * (y_bcp) + fDynamicConstraintOffsetY;
 
+      //Important to keep in mind here when defining offsets that in THIS calculation,
+      //{x/y}_bcp include the HCAL origin coordinates as offsets, whereas 
+      // thcp does NOT!
+      
       x_fcp = x_bcp + thcp * (z_fcp - z_bcp);
       y_fcp = y_bcp + phcp * (z_fcp - z_bcp);
       
@@ -1042,7 +1072,7 @@ Int_t SBSEArm::CoarseReconstruct()
 					 fBackConstraintWidthY[0]);
 
     if( BackTracker != nullptr ){
-      // IF there is a back tracker, and we're not using polarimeter mode,
+      // IF there is a back tracker, but we're not using polarimeter mode,
       // initialize it with identical constraints as the front:
       BackTracker->SetBackConstraintPoint(x_bcp, y_bcp, z_bcp);
       BackTracker->SetFrontConstraintPoint(x_fcp, y_fcp, z_fcp);
@@ -1137,8 +1167,39 @@ Int_t SBSEArm::Track()
 {
   //std::cout << "SBSEArm::Track(): polarimeter mode = " << fPolarimeterMode << std::endl;
   // Fine track Reconstruction
+
+  //We need these lines regardless so let's pull them outside of the if-block below:
+  SBSGEMSpectrometerTracker *FrontTracker = nullptr;
+  TIter next2( fTrackingDetectors );
+  while( auto* theTrackDetector =
+	 static_cast<THaTrackingDetector*>( next2() )) {
+    //What is the purpose of the line below?
+    assert(dynamic_cast<THaTrackingDetector*>(theTrackDetector));
+    // std::cout << "Got tracking detector, name = "
+    // 		<< theTrackDetector->GetName() << std::endl;
+    
+    
+    
+    if(theTrackDetector->InheritsFrom("SBSGEMSpectrometerTracker")){
+      FrontTracker = static_cast<SBSGEMSpectrometerTracker*>(theTrackDetector);
+      //std::cout << "Got Front tracker, name = " << FrontTracker->GetName() << std::endl;
+    }
+  }
+  
   if( !fPolarimeterMode ){  //Call regular spectrometer Track() method
     THaSpectrometer::Track();
+
+    if( FrontTracker != nullptr ){ //Add any constraint points if they exist:
+      for( int icp=0; icp<FrontTracker->GetNumConstraintPointsFront(); icp++ ){
+	AddFrontConstraintPoint( FrontTracker->GetFrontConstraintPoint(icp) );
+	AddFrontConstraintPoint_FT( FrontTracker->GetFrontConstraintPoint(icp) );
+      }
+
+      for( int icp=0; icp<FrontTracker->GetNumConstraintPointsBack(); icp++ ){
+	AddBackConstraintPoint( FrontTracker->GetBackConstraintPoint(icp) );
+	AddBackConstraintPoint_FT( FrontTracker->GetBackConstraintPoint(icp) );
+      }
+    }
   } else { //Polarimeter mode: behavior depends on experiment (GEN-RP or GEP):
     //Grab pointer to back tracker, do tracking there, then initialize front tracker constraints, and do tracking there too:
     if( !IsDone(kCoarseRecon) )
@@ -1147,22 +1208,7 @@ Int_t SBSEArm::Track()
     // std::cout << "Number of tracking detectors assigned to this EArm = "
     // 	      << fTrackingDetectors->GetSize() << std::endl;
     
-    SBSGEMSpectrometerTracker *FrontTracker = nullptr;
-    TIter next2( fTrackingDetectors );
-    while( auto* theTrackDetector =
-	   static_cast<THaTrackingDetector*>( next2() )) {
-      //What is the purpose of the line below?
-      assert(dynamic_cast<THaTrackingDetector*>(theTrackDetector));
-      // std::cout << "Got tracking detector, name = "
-      // 		<< theTrackDetector->GetName() << std::endl;
-
-      
-      
-      if(theTrackDetector->InheritsFrom("SBSGEMSpectrometerTracker")){
-	FrontTracker = static_cast<SBSGEMSpectrometerTracker*>(theTrackDetector);
-	//std::cout << "Got Front tracker, name = " << FrontTracker->GetName() << std::endl;
-      }
-    }
+    
     
     SBSGEMPolarimeterTracker *BackTracker = nullptr; 
     TIter next(fNonTrackingDetectors);
@@ -1263,6 +1309,7 @@ Int_t SBSEArm::Track()
 	  }
 	} else { //Back tracker first (similar to GEN-RP mode, but with "better" front constraint calculation):
 	  //ECAL/HCAL-based constraints for the back tracker will have been set in the "region-of-interest" module:
+	  //std::cout << "SBSEArm::Track(): starting tracking in GEP mode with flag non-zero!" << std::endl;
 	  BackTracker->FineProcess( *fTracks );
 	  
 	  if( BackTracker->GetNtracks() > 0 ){ //Then update/re-initialize front tracker constraint(s):
@@ -1311,19 +1358,24 @@ Int_t SBSEArm::Track()
 	      // We need to grab the "best" track info from the back tracker:
 
 	      // We're going to set the back constraint point for the front tracker using the projection of the back track to the point of
-	      // closest approach with the straight line defined by the front tracker constraint point pairs; always choose the pair with the smallest
-	      // sclose (distance of closest approach or DOCA) (perhaps we need to revisit and also look at the scattering angle theta)
+	      // closest approach with the straight line defined by the front tracker constraint point pair(s);
+	      // Make an array of compatible constraint point pairs and add them to the list for the front tracker.
+	      // Always put the pair with smallest sclose (distance of closest approach or DOCA) first (perhaps we need to revisit and consider using the scattering angle theta instead)
 	      
 	      int icp_best = -1;
 	      int ngoodcp = 0;
 	      double minsclose = kBig;
-
+	      double mintheta = kBig; 
 	      //If the back-tracker to front tracker alignment is not good, this calculation will not necessarily work well!
+
+	      vector<int> goodcpidx; //list of all "good" constraint points (those whose closest-approach parameters satisfy constraints!)
 	      
 	      for( int icp=0; icp<FrontTrackerFCPtemp.size(); icp++ ){
+		//slopes implied by constraint point pairs:
 		double xpcp = (FrontTrackerBCPtemp[icp].X() - FrontTrackerFCPtemp[icp].X())/(FrontTrackerBCPtemp[icp].Z()-FrontTrackerFCPtemp[icp].Z());
 		double ypcp = (FrontTrackerBCPtemp[icp].Y() - FrontTrackerFCPtemp[icp].Y())/(FrontTrackerBCPtemp[icp].Z()-FrontTrackerFCPtemp[icp].Z());
 
+		//space coordinates of front constraint point in this pair:
 		double xfcp = FrontTrackerFCPtemp[icp].X();
 		double yfcp = FrontTrackerFCPtemp[icp].Y();
 		double zfcp = FrontTrackerFCPtemp[icp].Z();
@@ -1348,46 +1400,80 @@ Int_t SBSEArm::Track()
 		//be within the defined constraint widths:
 
 		// Check that zclose reconstruction is sane; when zclose reconstructs outside the physical analyzer extent,
-		// usually this is because the scattering angle is small:
+		// usually this is because the scattering angle is small
 
-		//Need to put some safety checks into this calculation for constraint definition purposes 
-		//	zclose = std::max( FrontTracker->GetZmaxLayer(), std::min( BackTracker->GetZminLayer(), zclose ) );
+		//X and Y coordinates of FT and FPP "tracks" at their point of closest approach:
 		
 		double xcloseFT = xfcp + xpcp * (zclose - zfcp);
 		double ycloseFT = yfcp + ypcp * (zclose - zfcp);
 
 		double xcloseFPP = xFPP + xpFPP * zclose;
 		double ycloseFPP = yFPP + ypFPP * zclose;
+
+		// We also want the point of closest approach to be either inside the analyzer, OR
+		// for the "front" and back tracks to also agree at the analyzer midpoint,
+		// which will generally also be satisfied for small-angle scatterings:
 		
+	        double xFTmid = xfcp + xpcp * (fAnalyzerZ0 - zfcp);
+		double yFTmid = yfcp + ypcp * (fAnalyzerZ0 - zfcp);
+
+		double xFPPmid = xFPP + xpFPP * fAnalyzerZ0;
+		double yFPPmid = yFPP + ypFPP * fAnalyzerZ0;
+
+		bool goodzclose = ( fabs( zclose - fAnalyzerZ0 ) <= 0.5*fAnalyzerThick + 5.0*fSigmaZclose/sin(theta) );
+		bool goodprojmid = ( fabs( xFTmid - xFPPmid ) <= fBackConstraintWidthX[0] &&
+				     fabs( yFTmid - yFPPmid ) <= fBackConstraintWidthY[0] );
+				    
 		if( fabs( xcloseFT - xcloseFPP ) <= fBackConstraintWidthX[0] &&
-		    fabs( ycloseFT - ycloseFPP ) <= fBackConstraintWidthY[0] ){
+		    fabs( ycloseFT - ycloseFPP ) <= fBackConstraintWidthY[0] &&
+		    theta < fMaxFPPscatteringAngle &&
+		    (goodzclose || goodprojmid) ){
 		  ngoodcp++;
+
+		  goodcpidx.push_back( icp );
+		  
 		  if( icp_best < 0 || sclose < minsclose ){
 		    icp_best = icp;
 		    minsclose = sclose;
-		    //Store position and direction vectors:
+		    //Store position and direction vectors (not actually used in the current version of this algorithm):
 		    DirFTtemp = dircp;
 		    PosFTtemp = FrontTrackerFCPtemp[icp];
 		  }
 		}		
 	      }
-
+	      
 	      if( ngoodcp > 0 && icp_best >= 0 ){
+
+		// Test a slightly different "back to front" algorithm in which, instead of attempting to re-calculate/redefine the
+		// constraint point pairs for the FT, we simply take ALL existing CP pairs satisfying the "xclose" and "yclose" criteria above:
+
+		//Always put the "best" pair first in the array for convenience:
 		FrontTracker->SetFrontConstraintPoint( FrontTrackerFCPtemp[icp_best] );
-
-		double theta, phi, zclose, sclose;
-		//Calculate the scattering parameters again using the "best" constraint point pair:
-		CalcScatParams( PosFTtemp, DirFTtemp, PosFPPtemp, DirFPPtemp, theta, phi, sclose, zclose );
-
-		//double xcloseFPP = xFPP + xpFPP * zclose;
-		//double ycloseFPP = yFPP + ypFPP * zclose; 
+		FrontTracker->SetBackConstraintPoint( FrontTrackerBCPtemp[icp_best] );
 		
-		// Put a safety check here so that we don't break the constraint setting in SBSGEMTrackerBase;
-		// if zclose is outside this range, it usually means that the polar angle theta is small:
-		double zbcp = std::max( FrontTracker->GetZmaxLayer(), std::min( BackTracker->GetZminLayer(), zclose ) );
+		for( int igoodcp = 0; igoodcp < ngoodcp; igoodcp++ ){
+		  int idxgood = goodcpidx[igoodcp];
+
+		  //Don't add the "best" one twice!
+		  if( idxgood != icp_best ){
+		    FrontTracker->SetFrontConstraintPoint( FrontTrackerFCPtemp[idxgood] ); 
+		    FrontTracker->SetBackConstraintPoint( FrontTrackerBCPtemp[idxgood] );
+		  }
+		}
+     
+		// double theta, phi, zclose, sclose;
+		// //Calculate the scattering parameters again using the "best" constraint point pair:
+		// CalcScatParams( PosFTtemp, DirFTtemp, PosFPPtemp, DirFPPtemp, theta, phi, sclose, zclose );
+
+		// //double xcloseFPP = xFPP + xpFPP * zclose;
+		// //double ycloseFPP = yFPP + ypFPP * zclose; 
 		
-		FrontTracker->SetBackConstraintPoint( xFPP + zbcp * xpFPP, yFPP + zbcp * ypFPP, zbcp ); 
-	      } else { //Just use central value of constraint point assuming zero scattering angle; adjust width accordingly?
+		// // Put a safety check here so that we don't break the constraint setting in SBSGEMTrackerBase;
+		// // if zclose is outside this range, it usually means that the polar angle theta is small:
+		// double zbcp = std::max( FrontTracker->GetZmaxLayer(), std::min( BackTracker->GetZminLayer(), zclose ) );
+		
+		// FrontTracker->SetBackConstraintPoint( xFPP + zbcp * xpFPP, yFPP + zbcp * ypFPP, zbcp ); 
+	      } else { //Just use central value of constraint point assuming zero scattering angle; adjust width of front constraint accordingly:
 		FrontTracker->SetFrontConstraintPoint( fcpcentral );
 		FrontTracker->SetBackConstraintPoint( bcptemp );
 

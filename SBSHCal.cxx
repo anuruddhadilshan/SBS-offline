@@ -21,6 +21,7 @@ SBSHCal::SBSHCal( const char* name, const char* description,
   SetModeTDC(SBSModeTDC::kTDCSimple);
   SetDisableRefTDC(true);
   fWithLED = true;
+  SetEnableMultiPulse(false);
 
   //Default values for time-based cuts for best cluster selection:
   fRequireTDCGoodCluster = false;
@@ -151,6 +152,7 @@ void SBSHCal::Clear( Option_t* opt )
   fLEDBit = -1;
   fLEDCount = 0;
   SBSCalorimeter::Clear(opt);
+  fRefADCtimeGoodCluster = 0.0;
 }
 /*
  * Generic SBSHCal destructor

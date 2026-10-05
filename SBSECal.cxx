@@ -22,6 +22,7 @@ SBSECal::SBSECal( const char* name, const char* description,
   // SetModeTDC(SBSModeTDC::kTDCSimple);
   // SetDisableRefTDC(true);
   // fWithLED = true;
+  SetEnableMultiPulse(false);
 
   //Default values for time-based cuts for best cluster selection:
   // fRequireTDCGoodCluster = false;
@@ -347,7 +348,7 @@ void SBSECal::CalcShowerCoord(){
     double ymom = (ysum / esum - ymax)/fShowerShapeLyProf;
 
     int binx = int( (xmax - fShowerShapeXminProf)/(fShowerShapeXmaxProf-fShowerShapeXminProf)*double(fShowerShapeNbinsX) );
-    int biny = int( (ymax - fShowerShapeYminProf)/(fShowerShapeXmaxProf-fShowerShapeXminProf)*double(fShowerShapeNbinsY) );
+    int biny = int( (ymax - fShowerShapeYminProf)/(fShowerShapeYmaxProf-fShowerShapeYminProf)*double(fShowerShapeNbinsY) );
     if( binx >= 0 && binx < fShowerShapeNbinsX &&
 	biny >= 0 && biny < fShowerShapeNbinsY ){
       int bin = biny + fShowerShapeNbinsY * binx;

@@ -678,9 +678,13 @@ Int_t SBSSimDecoder::DoLoadEvent(const Int_t* evbuffer )
   }
 
   if( fDoBench ) fBench->Begin("clearEvent");
+
   Clear();
-  for(unsigned short i : fSlotClear)
+  
+  for(unsigned short i : fSlotClear){
     crateslot[i]->clearEvent();
+  }
+  
   if( fDoBench ) fBench->Stop("clearEvent");
 
   // FIXME: needed?
@@ -690,12 +694,17 @@ Int_t SBSSimDecoder::DoLoadEvent(const Int_t* evbuffer )
   //event_type = 1;//not smart to set event_type to 1 automatically...
   event_type = 0;//event_type set to 0 by default 
   // only set it to 1 if there is some signal in at least one detector...
+  
   event_num = simEvent->EvtID;//++;
   //int recent_event = event_num; // no longer used
-
+  
+  
   // Event weight
-  fWeight = simEvent->Tgmn->ev_sigma*simEvent->Tgmn->ev_solang;
 
+  //  fWeight = simEvent->Tgmn->ev_sigma*simEvent->Tgmn->ev_solang;
+  fWeight = fSigma * fOmega;
+  
+  
   //
   if( fDoBench ) fBench->Begin("physics_decode");
   
@@ -708,7 +717,9 @@ Int_t SBSSimDecoder::DoLoadEvent(const Int_t* evbuffer )
   for(size_t d = 0; d<fDetectors.size(); d++){
     if(fDebug>2)cout << fDetectors[d] << endl;
     //SBSDigSim::UHitData_t* HitData_Det = simEvent->HitDataDet.at(fDetectors[d]);
+
     LoadDetector(detmaps[d], fDetectors[d], simEvent);
+    
   }
   
   // Now call LoadSlot for the different detectors
