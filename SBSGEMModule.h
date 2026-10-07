@@ -334,6 +334,11 @@ class SBSGEMModule : public THaSubDetector {
   Int_t fCODA_BUILD_ALL_SAMPLES;
   Int_t fCODA_CM_ENABLED;
   
+  // 0: legacy DB-based MC handling; 1: CM-subtracted + online ZS;
+  // 2: CM-subtracted full readout; 3: raw full readout (offline CM).
+  Int_t fMCInputMode;
+  bool IsGoodCommonModeSample( UInt_t iraw, const mpdmap_t &apvinfo ) const;
+
   Int_t fCommonModeFlag; //default = 0 = sorting method, 1 = Danning method, 2 = histogramming method, 3 = "online" Danning-method
   Int_t fCommonModeOnlFlag; //default = 3 = Danning method during GMn, 4 = Danning method during GEn
   Int_t fPedSubFlag; //default = 0 (pedestal subtraction NOT done for full readout events). 
@@ -580,7 +585,6 @@ class SBSGEMModule : public THaSubDetector {
   std::vector<sbsgemcluster_t> fUclusters_goodADC; // 1D good-ADC clusters along "U" direction.
   std::vector<sbsgemcluster_t> fVclusters_goodADC; // 1D good-ADC clusters along "V" direction.
   std::vector<Int_t> fGoodUclustersIndex;  //Vector holding index of good clusters from the fUclusters to be considered for 2D hit reconstruction.
-  std::vector<sbsgemcluster_t> fVclusters; //1D clusters along "V" direction
   std::vector<Int_t> fGoodVclustersIndex;  //Vector holding index of good clusters from the fVclusters to be considered for 2D hit reconstruction.
 
   UInt_t fMAX2DHITS; // Max. 2d hits per module, to limit memory usage:

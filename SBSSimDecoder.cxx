@@ -43,9 +43,33 @@
 #include <fstream>
 #include <utility>
 #include <stdexcept>
+#include <set>
 
 using namespace std;
 using namespace Podd;
+
+namespace {
+// The GEM transport stores signed 13-bit samples. Older digitizers saturate
+// at +4096, which would otherwise become -4096 at the receiver. Preserve that
+// known positive saturation as +4095 before packing; do not change sign-bit
+// decoding, since -4096 is a valid encoded negative sample.
+UInt_t EncodeSignedGEMSample( Int_t adc, const std::string& detector ) {
+  if( adc == 4096 ){
+    static std::set<std::string> warned;
+    if( warned.insert(detector).second ){
+      ::Warning("SBSSimDecoder::EncodeSignedGEMSample",
+                "%s input contains +4096 saturation; encoding it as +4095 to preserve its sign (warning once per detector)",
+                detector.c_str());
+    }
+    adc = 4095;
+  }
+  if( adc < -4096 || adc > 4095 ){
+    throw std::out_of_range(detector + " GEM ADC " + std::to_string(adc) +
+                            " is outside signed 13-bit transport range [-4096,4095]");
+  }
+  return static_cast<UInt_t>(adc) & 0x1FFFU;
+}
+}
 
 class THaAnalysisObject;
 
@@ -1439,16 +1463,8 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
 	countwords_read_ft++;
 
 	strips.push_back(chan);
-	// if dighit_adc is negative, it will store samps as 2^32 + adc, which will mess up the encoding
-	// therefore, we need to "preencode" samps as 2^13+adc instead of 2^32+adc if adc is negative
-	// change propagated to FPP1; should it be propoagated to all GEM detectors???
-	if(simev->Tgep->Harm_FT_dighit_adc->at(j)>=0){
-	  //adc >= 0: no need to do anything special
-	  samps.push_back(simev->Tgep->Harm_FT_dighit_adc->at(j));
-	}else{
-	  //adc < 0: store adc in samps vector as 2^13+adc:
-	  samps.push_back((1<<13)+simev->Tgep->Harm_FT_dighit_adc->at(j));
-	}
+	// Pack signed ADC values into the 13-bit GEM transport.
+	samps.push_back(EncodeSignedGEMSample(simev->Tgep->Harm_FT_dighit_adc->at(j), detname));
 	if(simev->Tgep->Harm_FT_dighit_adc_good){
 	  goodsamps.push_back(simev->Tgep->Harm_FT_dighit_adc_good->at(j));
 	}else{
@@ -1518,15 +1534,8 @@ Int_t SBSSimDecoder::LoadDetector( std::map<Decoder::THaSlotData*,
       
       if(simev->Tgep->Harm_FPP1_dighit_samp->at(j)>=0){
 	strips.push_back(chan);
-	// if dighit_adc is negative, it will store samps as 2^32 + adc, which will mess up the encoding
-	// therefore, we need to "preencode" samps as 2^13+adc instead of 2^32+adc if adc is negative
-	if(simev->Tgep->Harm_FPP1_dighit_adc->at(j)>=0){
-	  //adc >= 0: no need to do anything special
-	  samps.push_back(simev->Tgep->Harm_FPP1_dighit_adc->at(j));
-	}else{
-	  //adc < 0: store adc in samps vector as 2^13+adc:
-	  samps.push_back((1<<13)+simev->Tgep->Harm_FPP1_dighit_adc->at(j));
-	}
+	// Pack signed ADC values into the 13-bit GEM transport.
+	samps.push_back(EncodeSignedGEMSample(simev->Tgep->Harm_FPP1_dighit_adc->at(j), detname));
 	if(simev->Tgep->Harm_FPP1_dighit_adc_good){
 	  goodsamps.push_back(simev->Tgep->Harm_FPP1_dighit_adc_good->at(j));
 	}else{

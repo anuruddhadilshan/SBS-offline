@@ -12,6 +12,8 @@
 #include "TGraphErrors.h"
 #include "TClonesArray.h"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <iomanip>
 
 using namespace std;
@@ -41,6 +43,7 @@ SBSGEMModule::SBSGEMModule( const char *name, const char *description,
   // Moved this to MPDModule, since this should be done during the decoding of the raw APV data:
   fOnlineZeroSuppression = kFALSE;
 
+  fMCInputMode = 0; // Preserve existing MC configurations unless explicitly selected.
   fCommonModeFlag = 0; //"sorting" method
   fCommonModeOnlFlag = 3; // 3 = Danning method during GMn, 4 = Danning method during GEn
   //Default: discard highest and lowest 28 strips for "sorting method" common-mode calculation:
@@ -306,6 +309,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   int usecommonmoderollingaverage = fMeasureCommonMode ? 1 : 0;
   
   int correctcommonmode = fCorrectCommonMode ? 1 : 0;
+  int mc_input_mode = 0; // Reset when a new database omits the optional key.
 
   int useTSfracTrigPhaseCorr = fUseTSfracTrigPhaseCorr ? 1 : 0;
   //int tsfractrigphasecorrflag = fTSfracTrigPhaseCorrFlag; 
@@ -364,6 +368,7 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     { "zerosuppress_nsigma", &fZeroSuppressRMS, kDouble, 0, 1, 1}, //(optional, search):
     { "do_neg_signal_study", &negsignalstudy_flag, kUInt, 0, 1, 1}, //(optional, search): toggle doing negative signal analysis
     { "onlinezerosuppress", &onlinezerosuppress_flag, kUInt, 0, 1, 1}, //(optional, search)
+    { "mc_input_mode", &mc_input_mode, kInt, 0, 1, 1},
     { "commonmode_meanU", &fCommonModeMeanU, kDoubleV, 0, 1, 0}, //(optional, don't search)
     { "commonmode_meanV", &fCommonModeMeanV, kDoubleV, 0, 1, 0}, //(optional, don't search)
     { "commonmode_rmsU", &fCommonModeRMSU, kDoubleV, 0, 1, 0}, //(optional, don't search)
@@ -497,6 +502,23 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
   //std::cout << GetName() << " fThresholdStripSum " << fThresholdStripSum 
   //<< " fThresholdSample " << fThresholdSample << std::endl;
   
+  if( mc_input_mode < 0 || mc_input_mode > 3 ){
+    Error(Here("ReadDatabase"), "mc_input_mode must be 0 (legacy), 1 (CM+ZS), 2 (CM, full), or 3 (raw, full)");
+    return kInitError;
+  }
+  fMCInputMode = mc_input_mode;
+  if( fIsMC && fMCInputMode != 0 ){
+    fOnlineZeroSuppression = fMCInputMode == 1;
+    if( fCorrectCommonMode ){
+      Warning(Here("ReadDatabase"), "Ignoring correct_common_mode for mc_input_mode %d; mode 3 performs ordinary offline CM subtraction", fMCInputMode);
+      fCorrectCommonMode = false;
+    }
+    if( fMCInputMode == 3 && (fCommonModeFlag < 0 || fCommonModeFlag > 6) ){
+      Error(Here("ReadDatabase"), "mc_input_mode 3 requires commonmode_flag in [0,6] (0 = enhanced sorting)");
+      return kInitError;
+    }
+  }
+
   if( fIsMC ){
     //fCommonModeFlag = -1; // commented out by ADR for 'full-readout' digitized data replay.
     fPedestalMode = false;
@@ -1429,6 +1451,7 @@ Int_t SBSGEMModule::DefineVariables( EMode mode ) {
   RVarDef varmisc[] = {
     {"ontrack", "Track passed through this module", "fTrackPassedThrough" },
     {"layer", "Layer number of this module", "fLayer" },
+    {"mc_input_mode", "MC input format: 0 legacy, 1 CM+ZS, 2 CM full, 3 raw full", "fMCInputMode" },
     {"roi.inmod", "Does the region-of-interest defined by the constraint-points/widths overlap with the module?", "fIsROIinMod"},
     {"roi.xmin", "xmin of the region-of-interest", "fROI_xmin"},
     {"roi.xmax", "xmax of the region-of-interest", "fROI_xmax"},
@@ -1757,6 +1780,14 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
     
     
 
+    // MC format is independent of the chosen CM estimator and real-data DAQ flags.
+    if( fIsMC && fMCInputMode != 0 ){
+      CM_ENABLED = fMCInputMode != 3;
+      BUILD_ALL_SAMPLES = fMCInputMode != 1;
+      CM_OUT_OF_RANGE = false;
+      cm_flags = 2*CM_ENABLED + BUILD_ALL_SAMPLES;
+    }
+
     //The proper logic of common-mode calculation/subtraction and zero suppression is as follows:
     // 1. If CM_ENABLED is true, we never calculate the common-mode ourselves, it has already been subtracted from the data:
     // 2. If BUILD_ALL_SAMPLES is false, then online zero suppression is enabled. We can, in addition, apply our own higher thresholds if we want:
@@ -1767,7 +1798,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
     //    must be false!
     
     CM_OUT_OF_RANGE = cm_flags/4;
-    CM_ENABLED = cm_flags/2;
+    CM_ENABLED = (cm_flags & 2) != 0;
     BUILD_ALL_SAMPLES = cm_flags%2;
 
     // if( cm_flags_found ){
@@ -1805,9 +1836,11 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
       //if( chan != effChan ) continue; // 
 
-    if( fIsMC ) {
-      CM_ENABLED = fCommonModeFlag != 0 && fCommonModeFlag != 1 && !fPedestalMode; //true; --> Commented out by ADR for 'full r/o' digitized data replay.
-      BUILD_ALL_SAMPLES = !fOnlineZeroSuppression && !CM_ENABLED; //false; --> Commented out by ADR for 'full r/o' digitized data replay.
+
+    if( fIsMC && fMCInputMode == 0 ){
+      // Preserve legacy MC overrides after the original DAQ validation.
+      CM_ENABLED = fCommonModeFlag != 0 && fCommonModeFlag != 1 && !fPedestalMode;
+      BUILD_ALL_SAMPLES = !fOnlineZeroSuppression && !CM_ENABLED;
     }
 
     //Let's see if we can actually decode the MPD debug headers:
@@ -1902,7 +1935,33 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
       //      assert(nsamp%fN_MPD_TIME_SAMP==0); //this is making sure that the number of samples is equal to an integer multiple of the number of time samples per strip
       Int_t nstrips = nsamp/fN_MPD_TIME_SAMP; //number of strips fired on this APV card (should be exactly 128 if online zero suppression is NOT used):
       
-      bool fullreadout = !CM_ENABLED && BUILD_ALL_SAMPLES && nstrips == fN_APV25_CHAN;
+      if( nsamp > int(fN_APV25_CHAN*fN_MPD_TIME_SAMP) || nsamp % fN_MPD_TIME_SAMP != 0 ){
+        Warning(Here("Decode"), "Invalid APV sample count %d (crate=%u slot=%u channel=%u), skipping", nsamp, it->crate, it->slot, effChan);
+        continue;
+      }
+      const bool newMC = fIsMC && fMCInputMode != 0;
+      if( newMC ){
+        bool valid = !BUILD_ALL_SAMPLES || nstrips == int(fN_APV25_CHAN);
+        std::vector<bool> seen(fN_APV25_CHAN, false);
+        for( int istrip=0; valid && istrip<nstrips; ++istrip ){
+          const UInt_t channel = evdata.GetRawData(it->crate,it->slot,effChan,istrip*fN_MPD_TIME_SAMP) & 0x7F;
+          const Int_t mapped = GetStripNumber(channel,it->pos,it->invert);
+          valid = !seen[channel] && mapped >= 0 &&
+            mapped < int(axis == SBSGEM::kUaxis ? fNstripsU : fNstripsV);
+          seen[channel] = true;
+          for( UInt_t isamp=1; valid && isamp<fN_MPD_TIME_SAMP; ++isamp ){
+            valid = (evdata.GetRawData(it->crate,it->slot,effChan,istrip*fN_MPD_TIME_SAMP+isamp) & 0x7F) == channel;
+          }
+        }
+        if( !valid ){
+          Warning(Here("Decode"), "Malformed/incomplete MC APV for mc_input_mode %d (crate=%u slot=%u channel=%u), skipping", fMCInputMode, it->crate, it->slot, effChan);
+          continue;
+        }
+      }
+      const bool allChannelsPresent = BUILD_ALL_SAMPLES && nstrips == int(fN_APV25_CHAN);
+      // Historically fullreadout meant uncorrected full readout. Keep diagnostics
+      // that require pre-CM samples restricted to that convention.
+      const bool fullreadout = allChannelsPresent && !CM_ENABLED;
       // std::cout << "MPD ID, ADC channel, number of strips fired = " << it->mpd_id << ", "
       // 		<< it->adc_id << ", " << nstrips << std::endl;
       
@@ -1993,7 +2052,8 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	  //rawADC[iraw] += fCM_online[isamp] (not yet sure if we want to add back the online-CM) ;
 	}
 
-  if ( fIsMC && fPedSubFlag != 0 ) ped = 0.0; // Tesing: digitization with 'online' CM correction and ZS applied. ADR.
+        // New MC includes pedestal noise, but no pedestal offsets.
+        if( fIsMC && (fMCInputMode != 0 || fPedSubFlag != 0) ) ped = 0.0;
 	  
 	pedsubADC[iraw] = double(ADC) - ped;
 	commonModeSubtractedADC[iraw] = double(ADC) - ped; 
@@ -2027,7 +2087,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 
 	    if( ngood < fCommonModeMinStripsInRange ){
 	      goodCM = false; //we'll require good common-mode on all six time samples to keep this APV's data for tracking analysis
-        if ( fIsMC ) goodCM = true; // TEST !!! ADR
+        if( fIsMC && fMCInputMode == 0 ) goodCM = true; // Preserve legacy behavior only.
 	    }
 	    
 	    //moved common-mode calculation to its own function:
@@ -2058,6 +2118,12 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	      
 	      if( !fPedestalMode ){
 		switch( fCommonModeFlag ){
+		case 3:
+		case 4:
+		case 6:
+		  commonMode[isamp] = (fIsMC && fMCInputMode == 3) ?
+		    GetCommonMode(isamp, fCommonModeFlag, *it) : cm_danning;
+		  break;
 		case 5:
 		  commonMode[isamp] = cm_histo_online;
 		  break;
@@ -2187,6 +2253,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	    }
 	    //std::cout << "effChan, isamp, Common-mode = " << effChan << ", " << isamp << ", " << commonMode[isamp] << std::endl;
 
+	    if( !std::isfinite(commonMode[isamp]) ) goodCM = false;
 	    //Now handle rolling average common-mode calculation:
 	    
 	    //UpdateRollingCommonModeAverage(apvcounter,commonMode[isamp]);
@@ -2381,7 +2448,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	//Pedestal has already been subtracted by the time we get herre, but let's grab anyway in case it's needed:
 	
 	//"pedtemp" is only used to fill pedestal histograms as of now:
-	double pedtemp = ( axis == SBSGEM::kUaxis ) ? fPedestalU[strip] : fPedestalV[strip];
+	double pedtemp = newMC ? 0.0 : (( axis == SBSGEM::kUaxis ) ? fPedestalU[strip] : fPedestalV[strip]);
 
 	if( fPedSubFlag != 0 && !fIsMC && !fPedestalMode ) pedtemp = 0.0;
 
@@ -2495,7 +2562,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	      if( fPedestalMode || fMakeCommonModePlots ){
 		hrawADCs_by_stripU->Fill( strip, rawADCtemp[isamp] );
 
-		hrawADCs_by_stripU_nopedsub->Fill( strip, rawADCtemp[isamp] + fPedestalU[strip] );
+		hrawADCs_by_stripU_nopedsub->Fill( strip, rawADCtemp[isamp] + (newMC ? 0.0 : fPedestalU[strip]) );
 		
 		hpedestal_subtracted_ADCs_by_stripU->Fill( strip, ADCtemp[isamp] ); //common-mode AND ped-subtracted
 		hcommonmode_subtracted_ADCs_by_stripU->Fill( strip, ADCtemp[isamp] + pedtemp ); //common-mode subtraction only, no ped:
@@ -2513,14 +2580,14 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	      // ( (TH2D*) (*hpedestal_subtracted_ADCs_by_strip_sampleU)[isamp] )->Fill( strip, ADCtemp[isamp] );
 
 	      hrawADCs_by_APV_U->Fill( iAPV, rawADCtemp[isamp] );
-	      hrawADCs_by_APV_U_nopedsub->Fill( iAPV, rawADCtemp[isamp] + fPedestalU[strip] );
+	      hrawADCs_by_APV_U_nopedsub->Fill( iAPV, rawADCtemp[isamp] + (newMC ? 0.0 : fPedestalU[strip]) );
 	      hADCs_by_APV_U->Fill( iAPV, ADCtemp[isamp] );
 
 	      if( !CM_OUT_OF_RANGE ) {
 		hpedestal_subtracted_ADCsU_goodCM->Fill( ADCtemp[isamp] );
 
 		hrawADCs_by_APV_U_goodCM->Fill( iAPV, rawADCtemp[isamp] );
-		hrawADCs_by_APV_U_nopedsub_goodCM->Fill( iAPV, rawADCtemp[isamp] + fPedestalU[strip] );
+		hrawADCs_by_APV_U_nopedsub_goodCM->Fill( iAPV, rawADCtemp[isamp] + (newMC ? 0.0 : fPedestalU[strip]) );
 		hADCs_by_APV_U_goodCM->Fill( iAPV, ADCtemp[isamp] );
 		
 		//if( iSampMax != 0 ){
@@ -2540,7 +2607,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	      // 	  << rawADCtemp[isamp] << ", " << ADCtemp[isamp] << ", " << pedtemp << ", " << commonMode[isamp] << std::endl;
 	      if( fPedestalMode || fMakeCommonModePlots){
 		hrawADCs_by_stripV->Fill( strip, rawADCtemp[isamp] );
-		hrawADCs_by_stripV_nopedsub->Fill( strip, rawADCtemp[isamp] + fPedestalV[strip] );
+		hrawADCs_by_stripV_nopedsub->Fill( strip, rawADCtemp[isamp] + (newMC ? 0.0 : fPedestalV[strip]) );
 		hpedestal_subtracted_ADCs_by_stripV->Fill( strip, ADCtemp[isamp] );
 		hcommonmode_subtracted_ADCs_by_stripV->Fill( strip, ADCtemp[isamp] + pedtemp );
 		hpedestal_subtracted_rawADCs_by_stripV->Fill( strip, ADCtemp[isamp] + commonMode[isamp] );
@@ -2555,7 +2622,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 	      // ( (TH2D*) (*hpedestal_subtracted_ADCs_by_strip_sampleU)[isamp] )->Fill( strip, ADCtemp[isamp] );
 	      
 	      hrawADCs_by_APV_V->Fill( iAPV, rawADCtemp[isamp] );
-	      hrawADCs_by_APV_V_nopedsub->Fill( iAPV, rawADCtemp[isamp] + fPedestalV[strip] );
+	      hrawADCs_by_APV_V_nopedsub->Fill( iAPV, rawADCtemp[isamp] + (newMC ? 0.0 : fPedestalV[strip]) );
 	      hADCs_by_APV_V->Fill( iAPV, ADCtemp[isamp] );
 
 	    
@@ -2569,7 +2636,7 @@ Int_t   SBSGEMModule::Decode( const THaEvData& evdata ){
 		hpedestal_subtracted_ADCsV_goodCM->Fill( ADCtemp[isamp] );
 
 		hrawADCs_by_APV_V_goodCM->Fill( iAPV, rawADCtemp[isamp] );
-		hrawADCs_by_APV_V_nopedsub_goodCM->Fill( iAPV, rawADCtemp[isamp] + fPedestalV[strip] );
+		hrawADCs_by_APV_V_nopedsub_goodCM->Fill( iAPV, rawADCtemp[isamp] + (newMC ? 0.0 : fPedestalV[strip]) );
 		hADCs_by_APV_V_goodCM->Fill( iAPV, ADCtemp[isamp] );
 		//if( iSampMax != 0 ){
 		if( isamp >= 2 ){
@@ -6489,13 +6556,19 @@ void SBSGEMModule::filter_2Dhits(){
 }
 
 double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &apvinfo, UInt_t nhits, bool out_of_range ){ 
-  if( isamp > fN_MPD_TIME_SAMP ) return 0;
+  const bool rawMC = fIsMC && fMCInputMode == 3;
+  const auto failed = [rawMC](double fallback){
+    return rawMC ? std::numeric_limits<double>::quiet_NaN() : fallback;
+  };
+  if( isamp >= fN_MPD_TIME_SAMP || nhits == 0 ) return failed(0.0);
 
   //unsigned int index = apvinfo.index;
 
   //Threshold on raw ADC value (not ped-subtracted) to avoid negative saturation:
   double rawADCmin = ( apvinfo.axis == SBSGEM::kUaxis ) ? fRawADCminU[apvinfo.pos] : fRawADCminV[apvinfo.pos];
+  if( rawMC ) rawADCmin = -4096.0;
   double rawADCmax = ( apvinfo.axis == SBSGEM::kUaxis ) ? fRawADCmaxU[apvinfo.pos] : fRawADCmaxV[apvinfo.pos];
+  if( rawMC ) rawADCmax = 4095.0;
   
   if( flag == 0 ){ //"enhanced" sorting method (experimental):
     vector<double> goodADCs(nhits);
@@ -6508,7 +6581,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 
       allADCs[ihit] = fPedSubADC_APV[ iraw ];
       
-      if( fRawADC_nopedsub_APV[ iraw ] > rawADCmin ){    
+      if( IsGoodCommonModeSample(iraw,apvinfo) ){
 	goodADCs[ngood] = fPedSubADC_APV[ iraw ];
 	ngood++;
       }
@@ -6516,13 +6589,14 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 
     goodADCs.resize( ngood );
 
+    if( rawMC && ngood < fCommonModeMinStripsInRange ) return failed(0.0);
     std::vector<double> &sortedADCs = (ngood >= fCommonModeMinStripsInRange) ? goodADCs : allADCs;
 
     //if( nhits < fCommonModeNstripRejectLow + fCommonModeNstripRejectHigh + fCommonModeMinStripsInRange ){
     if( sortedADCs.size() < fCommonModeMinStripsInRange ){
       Error(Here("SBSGEMModule::GetCommonMode()"), "Sorting-method common-mode calculation requested with nhits %d less than minimum %d required", nhits, fCommonModeMinStripsInRange );
       
-      exit(-1); //This seems like a fairly extreme response of stopping program execution, but alrighty then;
+      return failed(0.0);
     }
     
     std::sort( sortedADCs.begin(), sortedADCs.end() );
@@ -6536,7 +6610,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     //    for( int k=fCommonModeNstripRejectLow; k<nhits-fCommonModeNstripRejectHigh; k++ ){
 
     int firststrip = 0;
-    double mindiff = sortedADCs.back() - sortedADCs.front(); 
+    double mindiff = rawMC ? std::numeric_limits<double>::infinity() : sortedADCs.back() - sortedADCs.front();
     
     for( int j=0; j<=sortedADCs.size()-fCommonModeMinStripsInRange; j++ ){
 
@@ -6570,7 +6644,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 
       double ADC = fPedSubADC_APV[ iraw ];
 
-      if( fabs( ADC - cm_temp ) <= 3.0*pedRMS*fRMS_ConversionFactor ){
+      if( fabs( ADC - cm_temp ) <= 3.0*pedRMS*fRMS_ConversionFactor && (!rawMC || IsGoodCommonModeSample(iraw,apvinfo)) ){
 	sumADC += ADC;
 	ngood++;
       }
@@ -6668,11 +6742,12 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     //Now loop on all the strips and fill the histogram: 
     //for( int ihit=0; ihit<fN_APV25_CHAN; ihit++ ){
     for( int ihit=0; ihit<nhits; ihit++ ){
-      double ADC = fPedSubADC_APV[ isamp + fN_MPD_TIME_SAMP * ihit ];
+      const UInt_t iraw = isamp + fN_MPD_TIME_SAMP * ihit;
+      double ADC = fPedSubADC_APV[iraw];
 
       //compare raw ADC without pedestal subtraction to rawADCmin to
       // avoid negative saturation:
-      double rawADCnopedsub = fRawADC_nopedsub_APV[ isamp + fN_MPD_TIME_SAMP * ihit ];
+
 
       int nearestbin = std::max(0,std::min(nbins-1,int(round( (ADC - scan_min - 0.5*binwidth)/stepsize))));
 
@@ -6682,7 +6757,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       // std::cout << "testbin, nearestbin, nbins = " << testbin << ", " << nearestbin << ", "
       // 		<< nbins << endl;
       
-      while( testbin >= 0 && fabs( ADC - (scan_min + testbin*stepsize + 0.5*binwidth) ) <= 0.5*binwidth && rawADCnopedsub > rawADCmin ){
+      while( testbin >= 0 && fabs( ADC - (scan_min + testbin*stepsize + 0.5*binwidth) ) <= 0.5*binwidth && IsGoodCommonModeSample(iraw,apvinfo) ){
 	bincounts[testbin]++;
 	binADCsum[testbin] += ADC;
 	if( bincounts[testbin] > maxcounts ){
@@ -6693,7 +6768,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       }
       
       testbin=nearestbin;
-      while( testbin < nbins && fabs( ADC - (scan_min + testbin*stepsize + 0.5*binwidth) )<=0.5*binwidth && rawADCnopedsub > rawADCmin ){
+      while( testbin < nbins && fabs( ADC - (scan_min + testbin*stepsize + 0.5*binwidth) )<=0.5*binwidth && IsGoodCommonModeSample(iraw,apvinfo) ){
 	bincounts[testbin]++;
 	binADCsum[testbin] += ADC;
 	if( bincounts[testbin] > maxcounts ){
@@ -6705,7 +6780,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       
       // for( int bin=0; bin<nbins; bin++ ){
       // 	double bincenter = scan_min + bin*stepsize + 0.5*binwidth;
-      // 	if( fabs( ADC - bincenter ) <= 0.5*binwidth && rawADCnopedsub > rawADCmin ){
+      // 	if( fabs( ADC - bincenter ) <= 0.5*binwidth && IsGoodCommonModeSample(iraw,apvinfo) ){
       // 	  bincounts[bin]++;
       // 	  binADCsum[bin] += ADC;
       // 	  if( bincounts[bin] > maxcounts ){
@@ -6759,12 +6834,12 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       double sum = 0.0;
       for( int ihit=0; ihit<nhits; ihit++ ){
 	int iraw = isamp + fN_MPD_TIME_SAMP * ihit;
-	double ADC = fPedSubADC_APV[ isamp + fN_MPD_TIME_SAMP * ihit ];
+	double ADC = fPedSubADC_APV[iraw];
 	double pedrmstemp = ( apvinfo.axis == SBSGEM::kUaxis ) ? fPedRMSU[fStripAPV[iraw]] : fPedRMSV[fStripAPV[iraw]];
-	double rawADCnopedsub = fRawADC_nopedsub_APV[iraw];
+
 	// now loop on all the hits again and calculate the average of all ADCs falling within
 	// +/- nsigma * individual sample noise width of binavg:
-	if( fabs( ADC - binavg ) <= 3.0*pedrmstemp*fRMS_ConversionFactor && rawADCnopedsub > rawADCmin ){
+	if( fabs( ADC - binavg ) <= 3.0*pedrmstemp*fRMS_ConversionFactor && IsGoodCommonModeSample(iraw,apvinfo) ){
 	  ngood++;
 	  sum += ADC;
 	}
@@ -6782,7 +6857,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       //try histogramming again with out_of_range true (this will scan the entire allowed ADC range)
       
       return GetCommonMode( isamp, 2, apvinfo, nhits, true );
-      //return cm_mean;
+      //return failed(cm_mean);
     } else { //sorting as least resort:
       return GetCommonMode( isamp, 0, apvinfo );
     }
@@ -6801,13 +6876,13 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       
       double ADCtemp = fPedSubADC_APV[iraw];
       
-      if(ADCtemp > 0 && ADCtemp < cm_mean + 5*cm_rms){
+      if( (rawMC ? IsGoodCommonModeSample(iraw,apvinfo) : ADCtemp > 0) && ADCtemp < cm_mean + 5*cm_rms ){
 	CM_1 += ADCtemp;
 	n_keep++;
       }
     }
 
-    if( n_keep < fCommonModeMinStripsInRange ) return cm_mean;
+    if( n_keep < fCommonModeMinStripsInRange ) return failed(cm_mean);
     
     CM_1 /= double(n_keep);
     n_keep = 0;
@@ -6818,13 +6893,13 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       double ADCtemp = fPedSubADC_APV[iraw];
       double rmstemp = ( apvinfo.axis == SBSGEM::kUaxis ) ? fPedRMSU[fStripAPV[iraw]] : fPedRMSV[fStripAPV[iraw]];
       
-      if(ADCtemp > 0 && ADCtemp < CM_1 + 3*rmstemp){
+      if( (rawMC ? IsGoodCommonModeSample(iraw,apvinfo) : ADCtemp > 0) && ADCtemp < CM_1 + 3*rmstemp ){
 	CM_2 += ADCtemp;
 	n_keep++;
       }
     }
 
-    if( n_keep < fCommonModeMinStripsInRange ) return cm_mean;
+    if( n_keep < fCommonModeMinStripsInRange ) return failed(cm_mean);
     
     return CM_2/n_keep;
     
@@ -6844,7 +6919,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
       double cm_min = cm_mean - fCommonModeRange_nsigma*cm_rms;
 
       //NOTE: this line is only applicable to GEP running after the CM min value was reduced to zero for the initial averaging iteration in the online CM calculation 
-      if( iter == 0 && flag == 6 ) cm_min = 0.0;
+      if( iter == 0 && flag == 6 ) cm_min = rawMC ? -4096.0 : 0.0;
       
       double cm_max = cm_mean + fCommonModeRange_nsigma*cm_rms;
       double sumADCinrange = 0.0;
@@ -6862,18 +6937,19 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 	  cm_max = cm_temp + fCommonModeDanningMethod_NsigmaCut*2.5*rmstemp;
 	}
 
-	if( ADCtemp >= cm_min && ADCtemp <= cm_max ){
+	if( ADCtemp >= cm_min && ADCtemp <= cm_max && (!rawMC || IsGoodCommonModeSample(iraw,apvinfo)) ){
 	  n_keep++;
 	  sumADCinrange += ADCtemp;
 
 	}
       }
    
+      if( n_keep == 0 ) return failed(cm_mean);
       cm_temp = sumADCinrange / double(n_keep);
     }
 
     if( n_keep < fCommonModeMinStripsInRange ){
-      return cm_mean;
+      return failed(cm_mean);
     }
     
     return cm_temp;
@@ -6911,7 +6987,8 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     int maxbin = -1;
    
     for( int ihit=0; ihit<nhits; ihit++ ){
-      double ADC = fPedSubADC_APV[ isamp + fN_MPD_TIME_SAMP * ihit ];
+      const UInt_t iraw = isamp + fN_MPD_TIME_SAMP * ihit;
+      double ADC = fPedSubADC_APV[iraw];
       for( int bin=0; bin<nbins; bin++ ){
 	double bincenter = scan_min + bin*stepsize + 0.5*binwidth;
 
@@ -6920,7 +6997,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 	// ... 
 	//bin 63 center = (max - binwidth - 63*stepsize) + 63 * stepsize = max - binwidth --> CORRECT!
 	
-	if( fabs( ADC - bincenter )<=0.5*binwidth ){
+	if( fabs( ADC - bincenter )<=0.5*binwidth && (!rawMC || IsGoodCommonModeSample(iraw,apvinfo)) ){
 	  bincounts[bin]++;
 	  binADCsum[bin] += ADC;
 	  if( bincounts[bin] > maxcounts ){
@@ -6970,7 +7047,6 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 	
 	double ADCtemp = fPedSubADC_APV[iraw];
 
-	double rawADCnopedsub = fRawADC_nopedsub_APV[iraw];
 	//	double rawADCmin = ( apvinfo.axis == SBSGEM::kUaxis ) ? fRawADCminU[iraw] : fRawADCminV[iraw];
 	
 	//on iterations after the first iteration, reject strips with signals above nsigma * pedrms:
@@ -6992,7 +7068,7 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
 	  mintemp = cm_temp - fCommonModeDanningMethod_NsigmaCut*rmstemp*fRMS_ConversionFactor;
 	}
 	
-	if( ADCtemp >= mintemp && ADCtemp <= maxtemp && rawADCnopedsub > rawADCmin ){
+	if( ADCtemp >= mintemp && ADCtemp <= maxtemp && IsGoodCommonModeSample(iraw,apvinfo) ){
 	  nstripsinrange++;
 	  sumADCinrange += ADCtemp;
 	  //sum2ADCinrange += pow(ADCtemp,2);
@@ -7703,17 +7779,24 @@ void SBSGEMModule::PrintRawADCrange( std::ofstream &dbfile ){
   return;
 }
 //_________________________________________________________________________________
-int SBSGEMModule::GetNumGoodHitsAPV( UInt_t isamp, const mpdmap_t &apvinfo, UInt_t nhits ){
-  int iAPV = apvinfo.pos;
-  double rawADCmin = ( apvinfo.axis == SBSGEM::kUaxis ) ? fRawADCminU[iAPV] : fRawADCminV[iAPV];
-
-  int ngood = 0;
-  for( int ihit=0; ihit<nhits; ihit++ ){
-    if( fRawADC_nopedsub_APV[ isamp + fN_MPD_TIME_SAMP * ihit ] > rawADCmin ){
-      ngood++;
-    }
+bool SBSGEMModule::IsGoodCommonModeSample( UInt_t iraw, const mpdmap_t &apvinfo ) const {
+  const double adc = fRawADC_nopedsub_APV[iraw];
+  if( fIsMC && fMCInputMode == 3 ){
+    // Signed, offset-free samples: zero is not a hardware saturation bound.
+    // Exclude the transport rails from the CM estimate.
+    return adc > -4096.0 && adc < 4095.0;
   }
+  const double minimum = apvinfo.axis == SBSGEM::kUaxis ?
+    fRawADCminU[apvinfo.pos] : fRawADCminV[apvinfo.pos];
+  return adc > minimum;
+}
 
+int SBSGEMModule::GetNumGoodHitsAPV( UInt_t isamp, const mpdmap_t &apvinfo, UInt_t nhits ){
+  if( isamp >= fN_MPD_TIME_SAMP ) return 0;
+  int ngood = 0;
+  for( UInt_t ihit=0; ihit<nhits; ++ihit ){
+    if( IsGoodCommonModeSample(isamp + fN_MPD_TIME_SAMP*ihit,apvinfo) ) ++ngood;
+  }
   return ngood;
 }
 
