@@ -2,7 +2,7 @@
 
 #include <iostream>
 #include <vector>
-
+#include <chrono>
 
 // ============================================================
 // Constructor
@@ -397,21 +397,48 @@ bool SBSGEMMLHitFinder::Run(
   // F.pad(x, (0, padW, 0, padH))
   // ==========================================================
 
+  using MLClock = std::chrono::steady_clock;
+
+  const auto run_t0 = MLClock::now();
+
+  double padding_ms = 0.0;
+  double copies_ms = 0.0;
+  double tensor_creation_ms = 0.0;
+  double ort_ms = 0.0;
+  double output_crop_ms = 0.0;
+
+
+  // Start timing padding/allocation
+  const auto padding_t0 = MLClock::now();
+
+  // constexpr std::size_t FACTOR = 8;
+
+  // const std::size_t Hpad =
+  //   ((H + FACTOR - 1) / FACTOR) * FACTOR;
+
+  // const std::size_t Wpad =
+  //   ((W + FACTOR - 1) / FACTOR) * FACTOR;
+  // adding flag to add padding to 8 for speedup tests - Bhasitha speedup tests
   constexpr std::size_t FACTOR = 8;
 
-  const std::size_t Hpad =
+  std::size_t Hrun = H;
+  std::size_t Wrun = W;
+
+  if( fRequiresPaddingTo8 ){
+
+    Hrun =
     ((H + FACTOR - 1) / FACTOR) * FACTOR;
 
-  const std::size_t Wpad =
+    Wrun =
     ((W + FACTOR - 1) / FACTOR) * FACTOR;
+  }
 
 
   const std::size_t padH =
-    Hpad - H;
+      Hrun - H;
 
   const std::size_t padW =
-    Wpad - W;
-
+      Wrun - W;
 
   // ==========================================================
   // Create zero-padded x3d:
@@ -423,11 +450,45 @@ bool SBSGEMMLHitFinder::Run(
   //   [2,6,Hpad,Wpad]
   // ==========================================================
 
-  std::vector<float> x3d_padded(
-    2 * 6 * Hpad * Wpad,
+  // std::vector<float> x3d_padded(
+  //   2 * 6 * Hpad * Wpad,
+  //   0.0f
+  // );
+  // std::vector<float> extra_padded(
+  //   14 * Hpad * Wpad,
+  //   0.0f
+  // );
+  // adding flag to add padding to 8 for speedup tests - Bhasitha speedup tests
+const std::vector<float>* x3d_run  = &x3d;
+const std::vector<float>* extra_run = &extra;
+
+std::vector<float> x3d_padded;
+std::vector<float> extra_padded;
+
+
+// ==========================================================
+// Only create/copy padded tensors if this model requires them
+// ==========================================================
+
+const auto copies_t0 = MLClock::now();
+
+if( Hrun != H || Wrun != W ){
+
+  x3d_padded.assign(
+      2ULL * 6ULL * Hrun * Wrun,
     0.0f
   );
 
+  extra_padded.assign(
+      14ULL * Hrun * Wrun,
+      0.0f
+  );
+
+
+  // ========================================================
+  // Copy x3d:
+  // [2,6,H,W] -> [2,6,Hrun,Wrun]
+  // ========================================================
 
   for( std::size_t c = 0; c < 2; ++c ){
 
@@ -440,10 +501,8 @@ bool SBSGEMMLHitFinder::Run(
           const std::size_t src =
             (((c * 6 + t) * H + y) * W + x);
 
-
           const std::size_t dst =
-            (((c * 6 + t) * Hpad + y) * Wpad + x);
-
+              (((c * 6 + t) * Hrun + y) * Wrun + x);
 
           x3d_padded[dst] =
             x3d[src];
@@ -453,21 +512,10 @@ bool SBSGEMMLHitFinder::Run(
   }
 
 
-  // ==========================================================
-  // Create zero-padded extra tensor:
-  //
-  // original:
-  //   [14,H,W]
-  //
-  // padded:
-  //   [14,Hpad,Wpad]
-  // ==========================================================
-
-  std::vector<float> extra_padded(
-    14 * Hpad * Wpad,
-    0.0f
-  );
-
+  // ========================================================
+  // Copy extra:
+  // [14,H,W] -> [14,Hrun,Wrun]
+  // ========================================================
 
   for( std::size_t c = 0; c < 14; ++c ){
 
@@ -478,10 +526,8 @@ bool SBSGEMMLHitFinder::Run(
         const std::size_t src =
           ((c * H + y) * W + x);
 
-
         const std::size_t dst =
-          ((c * Hpad + y) * Wpad + x);
-
+            ((c * Hrun + y) * Wrun + x);
 
         extra_padded[dst] =
           extra[src];
@@ -490,26 +536,50 @@ bool SBSGEMMLHitFinder::Run(
   }
 
 
+  x3d_run = &x3d_padded;
+  extra_run = &extra_padded;
+}
+
+const auto copies_t1 = MLClock::now();
+
+copies_ms =
+    std::chrono::duration<double, std::milli>(
+        copies_t1 - copies_t0
+    ).count();
+
   // ==========================================================
   // ONNX tensor shapes
   // ==========================================================
 
-  const std::vector<int64_t> x3d_shape = {
+  // flag to add padding to 8 for speedup tests - Bhasitha speedup tests
+  // const std::vector<int64_t> x3d_shape = {
+  //   1,
+  //   2,
+  //   6,
+  //   static_cast<int64_t>(Hpad),
+  //   static_cast<int64_t>(Wpad)
+  // };
+  std::array<int64_t,5> x3d_shape = {
     1,
     2,
     6,
-    static_cast<int64_t>(Hpad),
-    static_cast<int64_t>(Wpad)
+      static_cast<int64_t>(Hrun),
+      static_cast<int64_t>(Wrun)
   };
 
-
-  const std::vector<int64_t> extra_shape = {
+  // flag to add padding to 8 for speedup tests - Bhasitha speedup tests
+  // const std::vector<int64_t> extra_shape = {
+  //   1,
+  //   14,
+  //   static_cast<int64_t>(Hpad),
+  //   static_cast<int64_t>(Wpad)
+  // };
+  std::array<int64_t,4> extra_shape = {
     1,
     14,
-    static_cast<int64_t>(Hpad),
-    static_cast<int64_t>(Wpad)
+      static_cast<int64_t>(Hrun),
+      static_cast<int64_t>(Wrun)
   };
-
 
   try {
 
@@ -517,21 +587,41 @@ bool SBSGEMMLHitFinder::Run(
     // Create ONNX input tensors
     // ========================================================
 
+    const auto tensor_t0 = MLClock::now();
+
+    // Ort::Value x3d_tensor =
+    //   Ort::Value::CreateTensor<float>(
+    //     fMemoryInfo,
+    //     x3d_padded.data(),
+    //     x3d_padded.size(),
+    //     x3d_shape.data(),
+    //     x3d_shape.size()
+    //   );
+
+
+    // Ort::Value extra_tensor =
+    //   Ort::Value::CreateTensor<float>(
+    //     fMemoryInfo,
+    //     extra_padded.data(),
+    //     extra_padded.size(),
+    //     extra_shape.data(),
+    //     extra_shape.size()
+    //   );
+    // flag to add padding to 8 for speedup tests - Bhasitha speedup tests
     Ort::Value x3d_tensor =
       Ort::Value::CreateTensor<float>(
         fMemoryInfo,
-        x3d_padded.data(),
-        x3d_padded.size(),
+            const_cast<float*>(x3d_run->data()),
+            x3d_run->size(),
         x3d_shape.data(),
         x3d_shape.size()
       );
 
-
     Ort::Value extra_tensor =
       Ort::Value::CreateTensor<float>(
         fMemoryInfo,
-        extra_padded.data(),
-        extra_padded.size(),
+            const_cast<float*>(extra_run->data()),
+            extra_run->size(),
         extra_shape.data(),
         extra_shape.size()
       );
@@ -558,10 +648,18 @@ bool SBSGEMMLHitFinder::Run(
       fOutputName.c_str()
     };
 
+    const auto tensor_t1 = MLClock::now();
+
+    tensor_creation_ms =
+      std::chrono::duration<double, std::milli>(
+        tensor_t1 - tensor_t0
+      ).count();
 
     // ========================================================
     // Run ONNX
     // ========================================================
+
+    const auto ort_t0 = MLClock::now();
 
     auto output_tensors =
       fSession->Run(
@@ -572,6 +670,15 @@ bool SBSGEMMLHitFinder::Run(
         output_names,
         1
       );
+
+
+      const auto ort_t1 = MLClock::now();
+
+      ort_ms =
+        std::chrono::duration<double, std::milli>(
+          ort_t1 - ort_t0
+        ).count();
+
 
 
     if( output_tensors.empty() ){
@@ -600,6 +707,8 @@ bool SBSGEMMLHitFinder::Run(
     // Inspect padded output
     // ========================================================
 
+    const auto crop_t0 = MLClock::now();
+
     auto info =
       output_tensors[0]
         .GetTensorTypeAndShapeInfo();
@@ -609,9 +718,11 @@ bool SBSGEMMLHitFinder::Run(
       info.GetElementCount();
 
 
+    // flag to add padding to 8 for speedup tests - Bhasitha speedup tests
+    // const std::size_t expected_output_count =
+    //   Hpad * Wpad;
     const std::size_t expected_output_count =
-      Hpad * Wpad;
-
+        Hrun * Wrun;
 
     if( output_count != expected_output_count ){
 
@@ -619,12 +730,12 @@ bool SBSGEMMLHitFinder::Run(
         << "[SBSGEMMLHitFinder] ERROR: "
         << "output size mismatch. Got "
         << output_count
-        << ", expected padded size "
+        << ", expected inference size "
         << expected_output_count
         << " ("
-        << Hpad
+        << Hrun
         << " x "
-        << Wpad
+        << Wrun
         << ")"
         << std::endl;
 
@@ -650,23 +761,75 @@ bool SBSGEMMLHitFinder::Run(
     );
 
 
-    for( std::size_t y = 0; y < H; ++y ){
+    // for( std::size_t y = 0; y < H; ++y ){
 
-      for( std::size_t x = 0; x < W; ++x ){
+    //   for( std::size_t x = 0; x < W; ++x ){
+
+    //     const std::size_t src =
+    //       y * Wpad + x;
+
+
+    //     const std::size_t dst =
+    //       y * W + x;
+
+
+    //     logits[dst] =
+    //       output_data[src];
+    //   }
+    // }
+    // flag to add padding to 8 for speedup tests - Bhasitha speedup tests
+    // ============================================================
+    // Copy ONNX output back to original H x W
+    //
+    // Fast model:
+    //   Hrun == H and Wrun == W
+    //   -> output is already exactly the required size.
+    //
+    // Old U-Net:
+    //   Hrun/Wrun may be padded
+    //   -> crop padded output back to H x W.
+    // ============================================================
+
+    if( Hrun == H && Wrun == W ){
+
+      // Fast model: no padding was used.
+      // ONNX output is already [1,1,H,W].
+      logits.assign(
+          output_data,
+          output_data + H * W
+      );
+
+    }
+    else{
+
+      // Old U-Net: ONNX output is [1,1,Hrun,Wrun].
+      // Crop away the bottom/right padding.
+
+      logits.resize(H * W);
+
+      for( std::size_t y = 0; y < H; y++ ){
+
+        for( std::size_t x = 0; x < W; x++ ){
 
         const std::size_t src =
-          y * Wpad + x;
-
+              y * Wrun + x;
 
         const std::size_t dst =
           y * W + x;
 
-
-        logits[dst] =
-          output_data[src];
+          logits[dst] = output_data[src];
       }
     }
+    }
 
+    const auto crop_t1 = MLClock::now();
+
+    output_crop_ms =
+      std::chrono::duration<double, std::milli>(
+        crop_t1 - crop_t0
+      ).count();
+
+    const auto run_t1 = MLClock::now();
 
     // ========================================================
     // Temporary diagnostic
@@ -688,10 +851,10 @@ bool SBSGEMMLHitFinder::Run(
         << std::endl;
 
       std::cout
-        << "  padded   H,W = "
-        << Hpad
+        << "  inference H,W = "
+        << Hrun
         << ", "
-        << Wpad
+        << Wrun
         << std::endl;
 
       std::cout
@@ -709,6 +872,64 @@ bool SBSGEMMLHitFinder::Run(
 
       printed_once = true;
     }
+
+
+    
+
+    const double run_total_ms =
+      std::chrono::duration<double, std::milli>(
+        run_t1 - run_t0
+      ).count();
+
+    const double accounted_ms =
+        padding_ms
+      + copies_ms
+      + tensor_creation_ms
+      + ort_ms
+      + output_crop_ms;
+
+    const double other_ms =
+      run_total_ms - accounted_ms;
+
+
+    static unsigned long timing_count = 0;
+    timing_count++;
+
+    // if(
+    //   timing_count <= 40 ||
+    //   timing_count % 100 == 0
+    // ){
+
+    //   std::cout
+    //     << "\n[ML HITFINDER TIMING]"
+    //     << " count=" << timing_count
+    //     << "\n"
+    //     << "  input:"
+    //     << " H=" << H
+    //     << " W=" << W
+    //     << " Hpad=" << Hpad
+    //     << " Wpad=" << Wpad
+    //     << "\n"
+    //     << "  timing_ms:"
+    //     << " padding=" << padding_ms
+    //     << " copies=" << copies_ms
+    //     << " tensor=" << tensor_creation_ms
+    //     << " ORT=" << ort_ms
+    //     << " crop=" << output_crop_ms
+    //     << "\n"
+    //     << "  accounted=" << accounted_ms
+    //     << " other=" << other_ms
+    //     << " Run_total=" << run_total_ms
+    //     << "\n"
+    //     << "  ORT/Run="
+    //     << (
+    //         run_total_ms > 0.0
+    //         ? 100.0 * ort_ms / run_total_ms
+    //         : 0.0
+    //       )
+    //     << "%"
+    //     << std::endl;
+    // }
 
 
     return true;

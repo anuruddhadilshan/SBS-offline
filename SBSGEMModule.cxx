@@ -36,6 +36,17 @@ using namespace std;
 //This should not be hard-coded, I think, but read in from the database (or perhaps not, if it never changes? For now we keep it hard-coded)
 // const int APVMAP[128] = {1, 33, 65, 97, 9, 41, 73, 105, 17, 49, 81, 113, 25, 57, 89, 121, 3, 35, 67, 99, 11, 43, 75, 107, 19, 51, 83, 115, 27, 59, 91, 123, 5, 37, 69, 101, 13, 45, 77, 109, 21, 53, 85, 117, 29, 61, 93, 125, 7, 39, 71, 103, 15, 47, 79, 111, 23, 55, 87, 119, 31, 63, 95, 127, 0, 32, 64, 96, 8, 40, 72, 104, 16, 48, 80, 112, 24, 56, 88, 120, 2, 34, 66, 98, 10, 42, 74, 106, 18, 50, 82, 114, 26, 58, 90, 122, 4, 36, 68, 100, 12, 44, 76, 108, 20, 52, 84, 116, 28, 60, 92, 124, 6, 38, 70, 102, 14, 46, 78, 110, 22, 54, 86, 118, 30, 62, 94, 126};
 
+
+// ============================================================
+// ML diagnostic text-file dumping
+// ============================================================
+//
+// true  -> write SBS_STAGE_DUMP diagnostic text files
+// false -> completely disable diagnostic file creation/writing
+//
+constexpr bool ML_ENABLE_DIAGNOSTIC_DUMP = false;
+
+
 SBSGEMModule::SBSGEMModule( const char *name, const char *description,
 			    THaDetectorBase* parent ):
   THaSubDetector(name,description,parent)
@@ -1231,6 +1242,15 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
 
     std::cout << "[SBSGEMModule::ReadDatabase] " << "ML model initialized successfully." << std::endl;
 
+
+    // flag to add 8-byte padding to input tensor if necessary - Bhasitha speedup tests
+    if(
+        std::string(GetParent()->GetName()) == "gemFT" &&
+        ( std::string(GetName()) == "m0" || std::string(GetName()) == "m1" || std::string(GetName()) == "m2" || std::string(GetName()) == "m3" || std::string(GetName()) == "m4" || std::string(GetName()) == "m5" )
+    ){
+        fMLHitFinder->SetRequiresPaddingTo8(false);
+  }
+
     // ============================================================
     // Temporary ONNX smoke test
     //
@@ -1247,8 +1267,8 @@ Int_t SBSGEMModule::ReadDatabase( const TDatime& date ){
     //
     // ============================================================
 
-    const std::size_t Htest = 16;
-    const std::size_t Wtest = 16;
+    const std::size_t Htest = 17;
+    const std::size_t Wtest = 19;
 
 
     std::vector<float> test_x3d(
@@ -5273,8 +5293,9 @@ void SBSGEMModule::find_2Dhits(){
     // ============================================================
 
     const bool dump_this_module =
+      ML_ENABLE_DIAGNOSTIC_DUMP &&
       std::string(GetParent()->GetName()) == "gemFT" &&
-      std::string(GetName()) == "m0";
+      std::string(GetName()) == "m5";
 
 
     const std::string dump_dir =
@@ -5282,77 +5303,101 @@ void SBSGEMModule::find_2Dhits(){
       "EVAL_DEBUG/SBS_STAGE_DUMP";
 
 
-    static std::ofstream stage0_file(
+    // static std::ofstream stage0_file(
+    //   dump_dir + "/sbs_ml_stage0_all_decoded.txt",
+    //   std::ios::out
+    // );
+
+    // static std::ofstream replay_file(
+    //   dump_dir + "/sbs_ml_replay_input.txt",
+    //   std::ios::out
+    // );
+
+    // static std::ofstream truth_file(
+    //   dump_dir + "/sbs_ml_truth.txt",
+    //   std::ios::out
+    // );
+
+    // static std::ofstream constraint_file(
+    //   dump_dir + "/sbs_ml_constraints.txt",
+    //   std::ios::out
+    // );
+
+    // static std::ofstream roi_bounds_file(
+    //   dump_dir + "/sbs_ml_roi_bounds.txt",
+    //   std::ios::out
+    // );
+
+    // static std::ofstream preml_combined_file(
+    //   dump_dir + "/sbs_ml_preprocessor_input_with_goodadc.txt",
+    //   std::ios::out
+    // );
+
+
+
+    // ============================================================
+    // Diagnostic files
+    //
+    // Only open/create them if diagnostic dumping is enabled AND
+    // this is the selected module.
+    // ============================================================
+
+    static std::unique_ptr<std::ofstream> stage0_file;
+    static std::unique_ptr<std::ofstream> replay_file;
+    static std::unique_ptr<std::ofstream> truth_file;
+    static std::unique_ptr<std::ofstream> constraint_file;
+    static std::unique_ptr<std::ofstream> roi_bounds_file;
+    static std::unique_ptr<std::ofstream> preml_combined_file;
+
+    static bool diagnostic_files_initialized = false;
+    static bool diagnostic_files_ok = false;
+
+    if( dump_this_module && !diagnostic_files_initialized ){
+
+      stage0_file =
+        std::make_unique<std::ofstream>(
       dump_dir + "/sbs_ml_stage0_all_decoded.txt",
       std::ios::out
     );
 
-    static std::ofstream replay_file(
+      replay_file =
+        std::make_unique<std::ofstream>(
       dump_dir + "/sbs_ml_replay_input.txt",
       std::ios::out
     );
 
-    static std::ofstream truth_file(
+      truth_file =
+        std::make_unique<std::ofstream>(
       dump_dir + "/sbs_ml_truth.txt",
       std::ios::out
     );
 
-    static std::ofstream constraint_file(
+      constraint_file =
+        std::make_unique<std::ofstream>(
       dump_dir + "/sbs_ml_constraints.txt",
       std::ios::out
     );
 
-    static std::ofstream roi_bounds_file(
+      roi_bounds_file =
+        std::make_unique<std::ofstream>(
       dump_dir + "/sbs_ml_roi_bounds.txt",
       std::ios::out
     );
 
-    static std::ofstream preml_combined_file(
+      preml_combined_file =
+        std::make_unique<std::ofstream>(
       dump_dir + "/sbs_ml_preprocessor_input_with_goodadc.txt",
       std::ios::out
     );
 
-    // ------------------------------------------------------------
-    // Headers:
-    //
-    // replay_file and truth_file intentionally have NO HEADER.
-    // This makes them directly compatible with the old Python code.
-    // ------------------------------------------------------------
-
-    static bool diagnostic_headers_written = false;
-
-    if( dump_this_module && !diagnostic_headers_written ){
-
-      stage0_file
-        << "event_id decoded_index module_id strip_id "
-        << "adc0 adc1 adc2 adc3 adc4 adc5 "
-        << "keep adc_sum adc_max\n";
-
-
-      constraint_file
-        << "event_id constraint_id "
-        << "xmin xmax ymin ymax\n";
-
-      roi_bounds_file
-        << "event_id roi_inmod "
-        << "umin umax vmin vmax\n";
-
-      diagnostic_headers_written = true;
-    }
-
-
-    static bool diagnostic_file_check_done = false;
-    static bool diagnostic_files_ok = true;
-
-    if( dump_this_module && !diagnostic_file_check_done ){
 
       diagnostic_files_ok =
-        stage0_file.is_open() &&
-        replay_file.is_open() &&
-        truth_file.is_open() &&
-        constraint_file.is_open() &&
-        roi_bounds_file.is_open() &&
-        preml_combined_file.is_open();
+          stage0_file->is_open() &&
+          replay_file->is_open() &&
+          truth_file->is_open() &&
+          constraint_file->is_open() &&
+          roi_bounds_file->is_open() &&
+          preml_combined_file->is_open();
 
 
       if( !diagnostic_files_ok ){
@@ -5364,8 +5409,65 @@ void SBSGEMModule::find_2Dhits(){
           << std::endl;
       }
 
-      diagnostic_file_check_done = true;
+      diagnostic_files_initialized = true;
     }
+
+
+
+    // ------------------------------------------------------------
+    // Headers:
+    //
+    // replay_file and truth_file intentionally have NO HEADER.
+    // This makes them directly compatible with the old Python code.
+    // ------------------------------------------------------------
+
+    static bool diagnostic_headers_written = false;
+
+    if( dump_this_module && diagnostic_files_ok && !diagnostic_headers_written ){
+
+      (*stage0_file)
+        << "event_id decoded_index module_id strip_id "
+        << "adc0 adc1 adc2 adc3 adc4 adc5 "
+        << "keep adc_sum adc_max\n";
+
+
+      (*constraint_file)
+        << "event_id constraint_id "
+        << "xmin xmax ymin ymax\n";
+
+      (*roi_bounds_file)
+        << "event_id roi_inmod "
+        << "umin umax vmin vmax\n";
+
+      diagnostic_headers_written = true;
+    }
+
+
+    // static bool diagnostic_file_check_done = false;
+    // static bool diagnostic_files_ok = true;
+
+    // if( dump_this_module && !diagnostic_file_check_done ){
+
+    //   diagnostic_files_ok =
+    //     stage0_file.is_open() &&
+    //     replay_file.is_open() &&
+    //     truth_file.is_open() &&
+    //     constraint_file.is_open() &&
+    //     roi_bounds_file.is_open() &&
+    //     preml_combined_file.is_open();
+
+
+    //   if( !diagnostic_files_ok ){
+
+    //     std::cerr
+    //       << "[ML DIAGNOSTIC] ERROR: could not open one or more "
+    //       << "diagnostic output files in "
+    //       << dump_dir
+    //       << std::endl;
+    //   }
+
+    //   diagnostic_file_check_done = true;
+    // }
 
 
     // ============================================================
@@ -5398,7 +5500,7 @@ void SBSGEMModule::find_2Dhits(){
     diagnostic_files_ok &&
     ml_event_id >= 0
   ){
-    roi_bounds_file
+  (*roi_bounds_file)
     << ml_event_id << " "
     << static_cast<int>(fIsROIinMod) << " "
     << fStripUc_min << " "
@@ -5421,7 +5523,7 @@ void SBSGEMModule::find_2Dhits(){
       ml_event_id >= 0
     ){
 
-      stage0_file
+      (*stage0_file)
         << std::setprecision(
              std::numeric_limits<double>::max_digits10
            );
@@ -5451,7 +5553,7 @@ void SBSGEMModule::find_2Dhits(){
         }
 
 
-        stage0_file
+        (*stage0_file)
           << ml_event_id
           << " "
           << ihit
@@ -5463,13 +5565,13 @@ void SBSGEMModule::find_2Dhits(){
 
         for( int t = 0; t < 6; t++ ){
 
-          stage0_file
+          (*stage0_file)
             << " "
             << fADCsamples[ihit][t];
         }
 
 
-        stage0_file
+        (*stage0_file)
           << " "
           << static_cast<int>(fKeepStrip[ihit])
           << " "
@@ -5490,7 +5592,7 @@ void SBSGEMModule::find_2Dhits(){
         ic++
       ){
 
-        constraint_file
+        (*constraint_file)
           << std::setprecision(
                std::numeric_limits<double>::max_digits10
              )
@@ -5523,18 +5625,18 @@ void SBSGEMModule::find_2Dhits(){
       //   1 = V
       // ==========================================================
 
-    //   for(
-    //     int igood = 0;
-    //     igood < fNstrips_hit_goodADC;
-    //     igood++
-    //   ){
+      // for(
+      //   int igood = 0;
+      //   igood < fNstrips_hit_goodADC;
+      //   igood++
+      // ){
 
-    //     if(
-    //       igood >= static_cast<int>(fGoodADCsamples.size()) ||
-    //       fGoodADCsamples[igood].size() < 6
-    //     ){
-    //       continue;
-    //     }
+      //   if(
+      //     igood >= static_cast<int>(fGoodADCsamples.size()) ||
+      //     fGoodADCsamples[igood].size() < 6
+      //   ){
+      //     continue;
+      //   }
 
 
     //     int module_id = -1;
@@ -5602,25 +5704,25 @@ void SBSGEMModule::find_2Dhits(){
 
   static int roi_debug_count = 0;
 
-  if(
-    dump_this_module &&
-    roi_debug_count < 20
-  ){
+  // if(
+  //   dump_this_module &&
+  //   roi_debug_count < 20
+  // ){
 
-    std::cout
-    << "[ML ROI DEBUG]"
-    << " event=" << ml_event_id
-    << " U=[" << fStripUc_min
-    << "," << fStripUc_max << "]"
-    << " V=[" << fStripVc_min
-    << "," << fStripVc_max << "]"
-    << " selectedU=" << ml_u_strips.size()
-    << " selectedV=" << ml_v_strips.size()
-    << " roi_ok=" << roi_ok
-    << std::endl;
+  //   std::cout
+  //   << "[ML ROI DEBUG]"
+  //   << " event=" << ml_event_id
+  //   << " U=[" << fStripUc_min
+  //   << "," << fStripUc_max << "]"
+  //   << " V=[" << fStripVc_min
+  //   << "," << fStripVc_max << "]"
+  //   << " selectedU=" << ml_u_strips.size()
+  //   << " selectedV=" << ml_v_strips.size()
+  //   << " roi_ok=" << roi_ok
+  //   << std::endl;
 
-    roi_debug_count++;
-  }
+  //   roi_debug_count++;
+  // }
 
     // ============================================================
     // STAGE 0B:
@@ -5645,7 +5747,7 @@ void SBSGEMModule::find_2Dhits(){
       ml_event_id >= 0
     ){
 
-      replay_file
+      (*replay_file)
         << std::setprecision(
              std::numeric_limits<float>::max_digits10
            );
@@ -5654,7 +5756,7 @@ void SBSGEMModule::find_2Dhits(){
       // U -> module_id 0
       for( const auto& strip : ml_u_strips ){
 
-        replay_file
+        (*replay_file)
           << ml_event_id
           << " "
           << 0
@@ -5664,13 +5766,13 @@ void SBSGEMModule::find_2Dhits(){
 
         for( int t = 0; t < 6; t++ ){
 
-          replay_file
+          (*replay_file)
             << " "
             << strip.adc[t];
         }
 
 
-        replay_file
+        (*replay_file)
           << "\n";
       }
 
@@ -5678,7 +5780,7 @@ void SBSGEMModule::find_2Dhits(){
       // V -> module_id 1
       for( const auto& strip : ml_v_strips ){
 
-        replay_file
+        (*replay_file)
           << ml_event_id
           << " "
           << 1
@@ -5688,13 +5790,13 @@ void SBSGEMModule::find_2Dhits(){
 
         for( int t = 0; t < 6; t++ ){
 
-          replay_file
+          (*replay_file)
             << " "
             << strip.adc[t];
         }
 
 
-        replay_file
+        (*replay_file)
           << "\n";
       }
     }
@@ -5798,7 +5900,7 @@ void SBSGEMModule::find_2Dhits(){
         const SBSGEMMLStrip& strip)
   {
 
-    preml_combined_file
+    (*preml_combined_file)
       << ml_event_id << " "
       << module_id << " "
       << strip.strip_id;
@@ -5808,7 +5910,7 @@ void SBSGEMModule::find_2Dhits(){
     // enter SBSGEMMLPreprocessor.
     for( int t = 0; t < 6; t++ ){
 
-      preml_combined_file
+      (*preml_combined_file)
         << " "
         << std::setprecision(
              std::numeric_limits<float>::max_digits10
@@ -5852,7 +5954,7 @@ void SBSGEMModule::find_2Dhits(){
     // }
 
 
-    preml_combined_file
+    (*preml_combined_file)
       << "\n";
   };
 
@@ -5904,7 +6006,7 @@ void SBSGEMModule::find_2Dhits(){
 
         timing_H = ml_input.H; // #TIMING Bhasitha
         timing_W = ml_input.W; // #TIMING Bhasitha
-        std::cout << "[ML DEBUG] ml_input.H=" << ml_input.H << " ml_input.W=" << ml_input.W << " pixel_size=" << ml_input.H*ml_input.W << std::endl; // Pixel size?
+        //std::cout << "[ML DEBUG] ml_input.H=" << ml_input.H << " ml_input.W=" << ml_input.W << " pixel_size=" << ml_input.H*ml_input.W << std::endl; // Pixel size?
         std::vector<float> ml_logits;
 
         const auto ml_inference_t0 = MLClock::now(); // #TIMING Bhasitha
@@ -6045,45 +6147,50 @@ void SBSGEMModule::find_2Dhits(){
 
 
     // Print first 20 ML events, then every 100th event.
-    if(
-      ml_timing_count <= 20 ||
-      ml_timing_count % 100 == 0
-    ){
+    // if(
+    //     (ml_timing_count <= 400 || ml_timing_count % 1000 == 0) &&
+    //     std::string(GetParent()->GetName()) == "gemFT" &&
+    //     std::string(GetName()) == "m5"
+    // ){
 
-      std::cout
-        << "\n[ML TIMING]"
-        << " event=" << ml_event_id
-        << " count=" << ml_timing_count
-        << "\n"
-        << "  status:"
-        << " roi=" << timing_roi_ok
-        << " build=" << timing_build_ok
-        << " inference=" << timing_inference_ok
-        << " post=" << timing_postprocess_ok
-        << " success=" << success_ML_hit_finding
-        << "\n"
-        << "  input:"
-        << " U=" << timing_nU
-        << " V=" << timing_nV
-        << " H=" << timing_H
-        << " W=" << timing_W
-        << " blobs=" << timing_nblobs
-        << " hits=" << fN2Dhits
-        << "\n"
-        << "  timing_ms:"
-        << " roi=" << ml_roi_ms
-        << " preprocess=" << ml_preprocess_ms
-        << " inference=" << ml_inference_ms
-        << " post=" << ml_postprocess_ms
-        << " hitbuild=" << ml_hitbuild_ms
-        << "\n"
-        << "  core=" << ml_core_ms
-        << " other=" << ml_other_ms
-        << " branch_total=" << ml_branch_ms
-        << " inference/core=" << inference_fraction
-        << "%"
-        << std::endl;
-    }
+    //   std::cout
+    //     << "\n[ML TIMING]"
+    //     << " event=" << ml_event_id
+    //     << " count=" << ml_timing_count
+    //     << " module="
+    //     << GetParent()->GetName()
+    //     << "."
+    //     << GetName()
+    //     << "\n"
+    //     << "  status:"
+    //     << " roi=" << timing_roi_ok
+    //     << " build=" << timing_build_ok
+    //     << " inference=" << timing_inference_ok
+    //     << " post=" << timing_postprocess_ok
+    //     << " success=" << success_ML_hit_finding
+    //     << "\n"
+    //     << "  input:"
+    //     << " U=" << timing_nU
+    //     << " V=" << timing_nV
+    //     << " H=" << timing_H
+    //     << " W=" << timing_W
+    //     << " blobs=" << timing_nblobs
+    //     << " hits=" << fN2Dhits
+    //     << "\n"
+    //     << "  timing_ms:"
+    //     << " roi=" << ml_roi_ms
+    //     << " preprocess=" << ml_preprocess_ms
+    //     << " inference=" << ml_inference_ms
+    //     << " post=" << ml_postprocess_ms
+    //     << " hitbuild=" << ml_hitbuild_ms
+    //     << "\n"
+    //     << "  core=" << ml_core_ms
+    //     << " other=" << ml_other_ms
+    //     << " branch_total=" << ml_branch_ms
+    //     << " inference/core=" << inference_fraction
+    //     << "%"
+    //     << std::endl;
+    // }
   }
 
 

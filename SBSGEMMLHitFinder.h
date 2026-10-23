@@ -57,10 +57,14 @@ public:
   const std::string& GetOutputName() const {
     return fOutputName;
   }
-
+  void SetRequiresPaddingTo8(bool value)
+  {
+    fRequiresPaddingTo8 = value;
+  }
 private:
 
   bool fInitialized = false;
+  bool fRequiresPaddingTo8 = true;
 
   Ort::Env fEnv;
   Ort::SessionOptions fSessionOptions;
