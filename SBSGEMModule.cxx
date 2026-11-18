@@ -6687,11 +6687,12 @@ double SBSGEMModule::GetCommonMode( UInt_t isamp, Int_t flag, const mpdmap_t &ap
     //double stepsize = DBrms*fCommonModeStepSize_Nsigma; //Default is 0.2 = rms/5
     //double binwidth = DBrms*fCommonModeBinWidth_Nsigma; //Default is +/- 2 sigma, bin width / step size = 20 with these settings
 
+    // Use a positive search width before deriving the histogram geometry.
+    // This local fallback does not change the calibrated physical CM RMS.
+    if( DBrms <= 0. ) DBrms = 10.0;
+
     double stepsize = 0.5*DBrms;
     double binwidth = 10.0*DBrms; //bin width is the FULL width of the bin, so 10*DBrms means +/- 5*DBrms for the bin size
-
-    //Protect against infinities/zero step size/bin width/etc
-    if( DBrms <= 0. ) DBrms = 10.0; 
     
     //    double sag = DBmean - cm_mean; 
     
