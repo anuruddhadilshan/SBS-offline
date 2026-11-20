@@ -251,6 +251,15 @@ Int_t SBSSimFile::Open()
     return -2;
   }
 
+  // Bound the input cache instead of auto-sizing it from the cluster metadata
+  // of large full-readout MC trees. Keep ROOT's normal branch-cache learning.
+  constexpr Long64_t kSimulationCacheBytes = 30LL * 1024 * 1024;
+  if( fTree->SetCacheSize(kSimulationCacheBytes) < 0 ) {
+    Error( __FUNCTION__, "Cannot configure simulation input tree cache" );
+    Close();
+    return -4;
+  }
+
   //  fTree->SetBranchStatus("*", kFALSE);
 
   /*
